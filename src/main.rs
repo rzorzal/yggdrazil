@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "ygg", about = "Yggdrazil — AI agent governance engine")]
+#[command(name = "ygg", about = "Yggdrazil — AI agent governance engine", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -52,6 +52,8 @@ enum Commands {
     DaemonRun {
         repo_root: String,
     },
+    /// Check for updates and self-update
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -106,5 +108,6 @@ fn main() -> Result<()> {
             tokio::runtime::Runtime::new()?
                 .block_on(daemon::Daemon::run(path))
         }
+        Commands::Update => cli::update::run(),
     }
 }
