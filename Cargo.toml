@@ -7,6 +7,10 @@ edition = "2021"
 name = "ygg"
 path = "src/main.rs"
 
+[lib]
+name = "yggdrazil"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
