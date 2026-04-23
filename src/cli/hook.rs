@@ -20,7 +20,7 @@ pub fn write_agent_state(world_path: &Path, world_id: &str, files: &[&str]) -> R
 }
 
 pub fn run(repo_root: &Path, world_id: &str, files: &[String]) -> Result<()> {
-    let world_path = repo_root.join(".ygg").join("worlds").join(world_id);
+    let world_path = crate::ipc::worlds_dir(repo_root).join(world_id);
     let file_refs: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
     write_agent_state(&world_path, world_id, &file_refs)?;
 
@@ -52,8 +52,10 @@ mod tests {
         let dir = tempdir().unwrap();
         write_agent_state(dir.path(), "feat-auth", &["src/auth.rs", "src/lib.rs"]).unwrap();
 
-        let state = std::fs::read_to_string(dir.path().join(".agent_state")).unwrap();
-        assert!(state.contains("feat-auth"));
-        assert!(state.contains("src/auth.rs"));
+        let content = std::fs::read_to_string(dir.path().join(".agent_state")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(parsed["world"], "feat-auth");
+        assert!(parsed["files"].as_array().unwrap().iter().any(|f| f == "src/auth.rs"));
+        assert!(parsed["ts"].as_str().is_some(), "ts field must be present");
     }
 }
