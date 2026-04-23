@@ -94,7 +94,11 @@ pub fn detect_conflicts(events: &[AuditEvent]) -> Vec<Conflict> {
         .filter(|(_, worlds)| worlds.len() > 1)
         .map(|(file, worlds)| Conflict {
             file,
-            worlds: worlds.into_iter().collect(),
+            worlds: {
+                    let mut v: Vec<String> = worlds.into_iter().collect();
+                    v.sort();
+                    v
+                },
             detected_at: chrono::Utc::now(),
         })
         .collect()

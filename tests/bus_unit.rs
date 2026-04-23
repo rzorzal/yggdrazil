@@ -25,7 +25,7 @@ fn append_and_read_events() {
 }
 
 #[test]
-fn append_is_atomic_and_does_not_corrupt() {
+fn sequential_appends_preserve_all_events() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("shared_memory.json");
     let mut log = AuditLog::open(&path).unwrap();
@@ -91,4 +91,60 @@ fn no_conflict_same_file_same_world() {
 
     let conflicts = detect_conflicts(&events);
     assert!(conflicts.is_empty());
+}
+
+#[test]
+fn read_recent_respects_n_cap() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("shared_memory.json");
+    let mut log = AuditLog::open(&path).unwrap();
+
+    for i in 0..20 {
+        log.append(&AuditEvent {
+            ts: chrono::Utc::now(),
+            event: EventKind::FileModified,
+            world: format!("world-{i}"),
+            agent: None, pid: None,
+            file: Some("src/lib.rs".into()),
+            files: None, worlds: None,
+        }).unwrap();
+    }
+
+    let recent = log.read_recent(5, 2).unwrap();
+    assert_eq!(recent.len(), 5);
+    // Should be the last 5 worlds (world-15 through world-19)
+    assert_eq!(recent[4].world, "world-19");
+}
+
+#[test]
+fn read_recent_filters_old_events() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("shared_memory.json");
+    let mut log = AuditLog::open(&path).unwrap();
+
+    // One old event (5 hours ago)
+    let old_ts = chrono::Utc::now() - chrono::Duration::hours(5);
+    log.append(&AuditEvent {
+        ts: old_ts,
+        event: EventKind::FileModified,
+        world: "old-world".into(),
+        agent: None, pid: None,
+        file: Some("src/lib.rs".into()),
+        files: None, worlds: None,
+    }).unwrap();
+
+    // One recent event
+    log.append(&AuditEvent {
+        ts: chrono::Utc::now(),
+        event: EventKind::FileModified,
+        world: "new-world".into(),
+        agent: None, pid: None,
+        file: Some("src/lib.rs".into()),
+        files: None, worlds: None,
+    }).unwrap();
+
+    // With max_age_hours=2, only the recent event should appear
+    let recent = log.read_recent(100, 2).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].world, "new-world");
 }
