@@ -64,28 +64,17 @@ impl AuditLog {
 }
 
 /// Scan events for file conflicts (same file, different worlds).
-/// Checks last 500 events within a 2-hour window.
+/// Pure aggregation — caller is responsible for pre-filtering by time/count.
 pub fn detect_conflicts(events: &[AuditEvent]) -> Vec<Conflict> {
-    let cutoff = chrono::Utc::now() - chrono::Duration::hours(2);
-    let window: Vec<_> = events
-        .iter()
-        .rev()
-        .take(500)
-        .filter(|e| {
-            e.ts > cutoff
-                && matches!(e.event, EventKind::FileModified | EventKind::IterationEnd)
-                && e.file.is_some()
-        })
-        .collect();
-
-    // file → set of worlds that touched it
     let mut file_worlds: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-    for event in &window {
-        if let Some(file) = &event.file {
-            file_worlds
-                .entry(file.clone())
-                .or_default()
-                .insert(event.world.clone());
+    for event in events {
+        if matches!(event.event, EventKind::FileModified | EventKind::IterationEnd) {
+            if let Some(file) = &event.file {
+                file_worlds
+                    .entry(file.clone())
+                    .or_default()
+                    .insert(event.world.clone());
+            }
         }
     }
 
@@ -95,10 +84,10 @@ pub fn detect_conflicts(events: &[AuditEvent]) -> Vec<Conflict> {
         .map(|(file, worlds)| Conflict {
             file,
             worlds: {
-                    let mut v: Vec<String> = worlds.into_iter().collect();
-                    v.sort();
-                    v
-                },
+                let mut v: Vec<String> = worlds.into_iter().collect();
+                v.sort();
+                v
+            },
             detected_at: chrono::Utc::now(),
         })
         .collect()
