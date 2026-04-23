@@ -91,8 +91,19 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
                     "unmanaged agent detected: {} PID {}, creating world {}",
                     agent.binary, pid, world_id
                 );
-                if let Ok(world) = trunk::create_world(repo_root, &world_id, "HEAD") {
-                    let _ = laws::inject_rules(&world.path, &world_id, "HEAD", &[]);
+                // Resolve HEAD to actual branch name
+                let branch = {
+                    std::process::Command::new("git")
+                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                        .current_dir(repo_root)
+                        .output()
+                        .ok()
+                        .and_then(|o| String::from_utf8(o.stdout).ok())
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|| "HEAD".to_string())
+                };
+                if let Ok(world) = trunk::create_world(repo_root, &world_id, &branch) {
+                    let _ = laws::inject_rules(&world.path, &world_id, &branch, &[]);
                 }
             } else {
                 tracing::info!(

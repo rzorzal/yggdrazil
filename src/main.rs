@@ -60,6 +60,14 @@ enum DaemonAction {
     Stop,
 }
 
+fn validate_world_id(id: &str) -> Result<()> {
+    if id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        Ok(())
+    } else {
+        anyhow::bail!("Invalid world id {:?}: only alphanumeric, '-', and '_' are allowed", id)
+    }
+}
+
 fn repo_root() -> PathBuf {
     let mut dir = std::env::current_dir().unwrap();
     loop {
@@ -83,7 +91,10 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { rules } => cli::init::run(&root, rules.as_deref()),
         Commands::Run { agent, args } => cli::run::run(&root, &agent, &args, None),
-        Commands::Hook { world, files } => cli::hook::run(&root, &world, &files),
+        Commands::Hook { world, files } => {
+            validate_world_id(&world)?;
+            cli::hook::run(&root, &world, &files)
+        }
         Commands::Sync { prune } => cli::sync::run(&root, prune),
         Commands::Monit => cli::monit::run(&root),
         Commands::Daemon { action } => match action {

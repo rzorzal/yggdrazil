@@ -36,7 +36,7 @@ pub fn ranges_overlap(a: (usize, usize), b: (usize, usize)) -> bool {
 
 pub fn diff_world(repo_root: &Path, world_id: &str, branch: &str) -> Result<WorldDiff> {
     let output = std::process::Command::new("git")
-        .args(["diff", "-U0", &format!("HEAD...{branch}")])
+        .args(["diff", "-U0", &format!("HEAD...refs/heads/{branch}")])
         .current_dir(repo_root)
         .output()
         .context("git diff failed")?;
@@ -98,6 +98,15 @@ pub fn format_overlap(r: &OverlapReport) -> String {
     )
 }
 
+fn current_branch(repo_root: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(repo_root)
+        .output()
+        .context("git rev-parse failed")?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 pub fn run(repo_root: &Path, prune: bool) -> Result<()> {
     let worlds = crate::daemon::trunk::list_worlds(repo_root)?;
     if worlds.is_empty() {
@@ -127,6 +136,12 @@ pub fn run(repo_root: &Path, prune: bool) -> Result<()> {
         }
     }
     println!();
+
+    let trunk = current_branch(repo_root)?;
+    if trunk == "HEAD" {
+        anyhow::bail!("Cannot merge: repo is in detached HEAD state. Checkout a branch first.");
+    }
+    println!("Merging into: {trunk}\n");
 
     for world in &worlds {
         let prompt = format!("Merge `{}` (branch: {}) → trunk?", world.id, world.branch);

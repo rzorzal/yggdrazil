@@ -12,6 +12,7 @@ pub struct AuditLog {
 }
 
 impl AuditLog {
+    // TODO: add advisory flock for concurrent daemon instances
     pub fn open(path: &Path) -> Result<Self> {
         if !path.exists() {
             std::fs::write(path, "")?;

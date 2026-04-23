@@ -1,13 +1,13 @@
 use crate::daemon::{laws, trunk};
 use anyhow::Result;
-use chrono::Utc;
 use dialoguer::{Confirm, Select};
 use std::path::Path;
 
 pub fn world_id_for(agent: &str, branch: &str) -> String {
-    let safe_branch = branch.replace('/', "-").replace(' ', "-");
-    let agent_short = agent.replace("claude-code", "claude").replace('-', "");
-    format!("{agent_short}-{safe_branch}-{}", Utc::now().format("%H%M%S"))
+    let now = chrono::Utc::now();
+    let safe_branch = branch.replace(['/', ' '], "-");
+    let agent_short = agent.split('/').last().unwrap_or(agent);
+    format!("{}-{}-{}", agent_short, safe_branch, now.format("%H%M%S%3f"))
 }
 
 fn list_local_branches(repo_root: &Path) -> Vec<String> {

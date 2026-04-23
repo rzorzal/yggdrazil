@@ -29,6 +29,7 @@ pub fn create_world(repo_root: &Path, world_id: &str, branch: &str) -> Result<Wo
         anyhow::bail!("git worktree add failed: {}", stderr);
     }
 
+    // TODO: port assignment is racy under concurrent ygg run; use a lockfile
     // Write .env with port offset
     let existing_worlds = list_worlds(repo_root).unwrap_or_default();
     let port = 3000u16 + existing_worlds.len() as u16;
@@ -66,11 +67,11 @@ fn resolve_worktree_branch(repo_root: &Path, world_id: &str, branch: &str) -> Re
         // Branch is already checked out — create a new branch named world_id based on branch.
         let new_branch = world_id.to_string();
         let exists = std::process::Command::new("git")
-            .args(["branch", "--list", &new_branch])
+            .args(["rev-parse", "--verify", &format!("refs/heads/{new_branch}")])
             .current_dir(repo_root)
-            .output()?
-            .stdout
-            .len() > 0;
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
         if !exists {
             let out = std::process::Command::new("git")
@@ -87,11 +88,11 @@ fn resolve_worktree_branch(repo_root: &Path, world_id: &str, branch: &str) -> Re
     } else {
         // Branch not checked out anywhere — ensure it exists then use it directly.
         let exists = std::process::Command::new("git")
-            .args(["branch", "--list", branch])
+            .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
             .current_dir(repo_root)
-            .output()?
-            .stdout
-            .len() > 0;
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
         if !exists {
             let out = std::process::Command::new("git")
