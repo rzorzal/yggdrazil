@@ -23,8 +23,7 @@ pub fn render(f: &mut Frame, state: &AppState, world_id: &str) {
         .split(f.size());
 
     let info = if let Some(w) = world {
-        let env_path = w.path.join(".env");
-        let env = std::fs::read_to_string(&env_path).unwrap_or_else(|_| "(no .env)".into());
+        let env = state.world_env.as_deref().unwrap_or("(no .env)");
         let agent = state
             .agents
             .iter()

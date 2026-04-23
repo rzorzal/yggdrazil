@@ -30,7 +30,8 @@ pub fn render(f: &mut Frame, state: &AppState) {
         .constraints([
             Constraint::Percentage(35),
             Constraint::Percentage(20),
-            Constraint::Percentage(45),
+            Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(size);
 
@@ -135,7 +136,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     // Status bar
     let help = Paragraph::new("[q]uit  [s]ync  [r]un new agent  [d]elete world  [↑↓]select  [Enter]detail");
-    f.render_widget(help, ratatui::layout::Rect { y: size.height.saturating_sub(1), height: 1, ..size });
+    f.render_widget(help, chunks[3]);
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ pub struct AppState {
     pub selected_world: usize,
     pub view: View,
     pub audit_scroll: usize,
+    pub world_env: Option<String>,
 }
 
 #[derive(Default, PartialEq)]
@@ -66,6 +67,8 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
                     }
                     (View::Dashboard, KeyCode::Enter) => {
                         if let Some(w) = state.worlds.get(state.selected_world) {
+                            let env_path = w.path.join(".env");
+                            state.world_env = std::fs::read_to_string(&env_path).ok();
                             state.view = View::WorldDetail(w.id.clone());
                         }
                     }
