@@ -82,10 +82,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Init { rules } => cli::init::run(&root, rules.as_deref()),
         Commands::Run { agent, args } => cli::run::run(&root, &agent, &args, None),
-        Commands::Hook { world: _, files: _ } => {
-            println!("ygg hook — not yet implemented");
-            Ok(())
-        }
+        Commands::Hook { world, files } => cli::hook::run(&root, &world, &files),
         Commands::Sync { prune: _ } => {
             println!("ygg sync — not yet implemented");
             Ok(())
