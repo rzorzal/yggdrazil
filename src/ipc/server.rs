@@ -28,19 +28,22 @@ impl IpcServer {
         Ok(Self { listener, tx })
     }
 
-    pub async fn accept_loop<F, Fut>(&mut self, _handler: F) -> Result<()>
+    pub async fn accept_loop<F, Fut>(&mut self, handler: F) -> Result<()>
     where
         F: Fn(IpcMessage) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send,
     {
+        let handler = std::sync::Arc::new(handler);
         loop {
             let conn = self.listener.accept().await?;
             let tx = self.tx.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(&conn);
                 let mut line = String::new();
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     if let Ok(msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
+                        handler(msg.clone()).await;
                         let _ = tx.send(msg);
                     }
                     line.clear();
