@@ -103,3 +103,15 @@ pub fn detect_conflicts(events: &[AuditEvent]) -> Vec<Conflict> {
         })
         .collect()
 }
+
+pub fn notify_conflict(file: &str, worlds: &[String]) {
+    let body = format!("Conflict in {}: worlds {:?}", file, worlds);
+    tracing::warn!("{}", body);
+    #[cfg(not(test))]
+    {
+        let _ = notify_rust::Notification::new()
+            .summary("Yggdrazil: Conflict Detected")
+            .body(&body)
+            .show();
+    }
+}
