@@ -10,8 +10,9 @@ pub fn classify_binary(name: &str) -> Option<&'static str> {
     AGENT_BINARIES.iter().find(|&&b| name == b).copied()
 }
 
-/// Scan all processes, return AI agents whose CWD is inside worlds_dir.
-pub fn scan_once(worlds_dir: &str) -> Vec<Agent> {
+/// Scan all processes, return AI agents whose CWD is inside repo_root.
+/// `managed` field is true if CWD is inside worlds_dir.
+pub fn scan_once(repo_root: &str, worlds_dir: &str) -> Vec<Agent> {
     let mut sys = System::new_all();
     sys.refresh_processes();
 
@@ -22,21 +23,29 @@ pub fn scan_once(worlds_dir: &str) -> Vec<Agent> {
             let binary = classify_binary(name)?;
             let cwd = proc.cwd()?;
             let cwd_str = cwd.to_str()?;
-            if !cwd_str.starts_with(worlds_dir) {
-                return None;
+
+            if cwd_str.starts_with(worlds_dir) {
+                // Managed — extract world_id from path
+                let rel = cwd_str.strip_prefix(worlds_dir)?.trim_start_matches('/');
+                let world_id = rel.split('/').next()?.to_string();
+                if world_id.is_empty() { return None; }
+                Some(Agent {
+                    pid: proc.pid().as_u32(),
+                    binary: binary.to_string(),
+                    world_id,
+                    active_files: vec![],
+                })
+            } else if cwd_str.starts_with(repo_root) {
+                // Unmanaged — world_id is empty (not yet created)
+                Some(Agent {
+                    pid: proc.pid().as_u32(),
+                    binary: binary.to_string(),
+                    world_id: String::new(),
+                    active_files: vec![],
+                })
+            } else {
+                None
             }
-            // Extract world id: .ygg/worlds/<id>/...
-            let rel = cwd_str.strip_prefix(worlds_dir)?.trim_start_matches('/');
-            let world_id = rel.split('/').next()?.to_string();
-            if world_id.is_empty() {
-                return None;
-            }
-            Some(Agent {
-                pid: proc.pid().as_u32(),
-                binary: binary.to_string(),
-                world_id,
-                active_files: vec![],
-            })
         })
         .collect()
 }
@@ -80,7 +89,14 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
         // Detect exited agents
         let current_pids: std::collections::HashSet<u32> = sys.processes().keys()
             .map(|p| p.as_u32()).collect();
-        known_pids.retain(|pid| current_pids.contains(pid));
+        known_pids.retain(|pid| {
+            if current_pids.contains(pid) {
+                true
+            } else {
+                tracing::info!("agent exited: PID {}", pid);
+                false
+            }
+        });
 
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
@@ -104,9 +120,8 @@ mod tests {
 
     #[test]
     fn scan_once_returns_vec() {
-        // Just verify it runs without panic and returns a Vec
-        let agents = scan_once("/nonexistent/worlds");
-        let _ = agents; // May be empty — that's fine
+        let agents = scan_once("/nonexistent/repo", "/nonexistent/worlds");
+        let _ = agents;
     }
 
     #[test]
