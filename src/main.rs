@@ -1,6 +1,7 @@
 mod cli;
 mod daemon;
 mod ipc;
+mod tui;
 mod types;
 
 use anyhow::Result;
@@ -87,10 +88,7 @@ fn main() -> Result<()> {
             println!("ygg sync — not yet implemented");
             Ok(())
         }
-        Commands::Monit => {
-            println!("ygg monit — not yet implemented");
-            Ok(())
-        }
+        Commands::Monit => cli::monit::run(&root),
         Commands::Daemon { action } => match action {
             DaemonAction::Start => cli::daemon_cmd::start(&root),
             DaemonAction::Stop => cli::daemon_cmd::stop(&root),
