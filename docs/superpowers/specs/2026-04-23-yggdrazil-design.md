@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Yggdrazil is a Rust CLI tool that governs parallel AI agent development via Git Worktrees. It creates isolated "Worlds" from a trunk repo, monitors AI agent processes, detects file conflicts, injects governance rules into each world, and provides a smart merge flow when work is complete.
+Yggdrazil is a Rust CLI tool that governs parallel AI agent development via Git Worktrees. Worlds are created automatically when an AI agent session opens — not manually. `ygg init` is a one-time repo setup. Each agent gets its own isolated World (git worktree on a user-chosen branch). The daemon monitors all agents, detects file conflicts, injects governance rules, and provides a smart merge flow when work is complete.
 
 **Target platforms:** macOS, Linux, Windows (cross-compiled via GitHub Actions).
 
@@ -19,13 +19,13 @@ Yggdrazil is a Rust CLI tool that governs parallel AI agent development via Git 
 │                    ygg binary                           │
 │                                                         │
 │  CLI (clap)                                             │
-│  ├── ygg init [--world <name>] [--rules <path>]         │
-│  ├── ygg monit          → connect to daemon, render TUI │
-│  ├── ygg sync           → smart merge + memory consolidate
-│  ├── ygg hook           → agent self-report (cross-platform)│
-│  ├── ygg daemon start   → spawn background daemon       │
-│  └── ygg daemon stop                                    │
-│  Note: ygg monit auto-starts daemon if not running      │
+│  ├── ygg init [--rules <path>]  → one-time repo setup   │
+│  ├── ygg run <agent-cmd>        → managed agent launch  │
+│  ├── ygg monit                  → TUI dashboard         │
+│  ├── ygg sync                   → smart merge flow      │
+│  ├── ygg hook                   → agent self-report     │
+│  ├── ygg daemon start/stop                              │
+│  Note: ygg monit / ygg run auto-start daemon if needed  │
 │                                                         │
 │  Daemon (tokio async)                                   │
 │  ├── Roots: sysinfo process scanner (30-60s poll)       │
@@ -66,14 +66,20 @@ Yggdrazil is a Rust CLI tool that governs parallel AI agent development via Git 
 - Uses `sysinfo` crate to scan all PIDs every 30s (configurable).
 - Matches binaries: `claude`, `claude-code`, `codex`, `aider`, `cursor`.
 - For each match: extracts PID, CWD, binary name.
-- If CWD is under `.ygg/worlds/<name>/` → maps agent to that world.
+- **Managed agents** (launched via `ygg run`): world already exists, Roots just maps PID → world.
+- **Unmanaged agents** (IDE-launched, scripts): if CWD is in repo but not in `.ygg/worlds/`, Roots auto-creates a world named `unmanaged-<timestamp>` on HEAD, injects Laws with a note to self-report target branch via `.agent_state`.
 - Emits `AgentSpawned` / `AgentExited` events to Resonance Bus.
 
 ### 3.2 Trunk — Worktree Manager
-- Wraps `git worktree add .ygg/worlds/<name> -b <name>` via `git2` crate.
-- `ygg init`: creates `.ygg/` structure, adds first worktree (or named world with `--world`).
-- Injects env vars into `.ygg/worlds/<name>/.env`: base port + world index (world 0 → PORT=3000, world 1 → PORT=3001, etc.).
-- Custom rules path via `--rules <path>` copies/symlinks file into world.
+- Wraps `git worktree add .ygg/worlds/<name> -b <branch>` via `git2` crate.
+- `ygg init`: one-time setup — creates `.ygg/` structure, adds `.ygg/` to `.gitignore`, starts daemon.
+- **World creation via `ygg run <agent-cmd>`:**
+  1. Prompt user: "Which branch for this session? [enter to use current HEAD]"
+  2. If branch already in use by another world → warn: "World `<x>` already on `<branch>`. Continue? [y/n]"
+  3. Create worktree on that branch, inject Laws, spawn agent process inside world dir.
+- **World creation via Roots (unmanaged):** creates worktree on HEAD, world named `unmanaged-<timestamp>`.
+- Injects env vars into `.ygg/worlds/<name>/.env`: base port + world index (world 0 → PORT=3000, world 1 → PORT=3001).
+- Custom rules path via `--rules <path>` on `ygg init` applies globally to all worlds.
 
 ### 3.3 Laws — Rules Injector
 - On `ygg init`: writes `CLAUDE.md`, `.cursorrules`, `.aider.conf.yml` into each world with YGGDRAZIL PROTOCOL preamble:
@@ -118,23 +124,23 @@ On each `file_modified` event, scan the last 500 events (or 2-hour window, which
 Built with `ratatui` + `crossterm`.
 
 ```
-┌─ YGGDRAZIL ──────────────────────────────────────────────────────┐
-│ Worlds          │ Active Agents                                   │
-│ ─────────────── │ ──────────────────────────────────────────────  │
-│ ● feature-auth  │ PID 1234  claude-code  feature-auth  auth.rs   │
-│ ● feature-api   │ PID 5678  aider        feature-api   routes.rs │
-│ ○ main          │                                                 │
-├─────────────────┴──────────────────────────────────────────────  ┤
-│ ⚠ CONFLICTS                                                       │
-│ src/auth.rs — feature-auth (claude) + feature-api (aider)        │
-│ Warning injected into feature-api CLAUDE.md at 10:23:41          │
-├──────────────────────────────────────────────────────────────────┤
-│ Audit Log                                              [↑↓ scroll]│
-│ 10:23:41  file_modified   feature-api    src/auth.rs             │
-│ 10:23:39  file_modified   feature-auth   src/auth.rs             │
-│ 10:23:10  agent_spawned   feature-api    aider  PID 5678         │
-└──────────────────────────────────────────────────────────────────┘
- [q]uit  [s]ync  [n]ew world  [d]elete world  [r]efresh
+┌─ YGGDRAZIL ──────────────────────────────────────────────────────────┐
+│ Worlds             Branch           │ Active Agents                   │
+│ ─────────────────────────────────── │ ──────────────────────────────  │
+│ ● feature-auth     feat/auth        │ PID 1234  claude  auth.rs       │
+│ ● feature-api      feat/api         │ PID 5678  aider   routes.rs     │
+│ ⚠ unmanaged-1025   main (unmanaged) │ PID 9012  codex   main.rs       │
+├─────────────────────────────────────┴──────────────────────────────  ┤
+│ ⚠ CONFLICTS                                                           │
+│ src/auth.rs — feature-auth (claude/feat/auth) + feature-api (aider/feat/api)│
+│ Warning injected into feature-api CLAUDE.md at 10:23:41              │
+├──────────────────────────────────────────────────────────────────────┤
+│ Audit Log                                                  [↑↓ scroll]│
+│ 10:23:41  file_modified   feature-api   feat/api    src/auth.rs      │
+│ 10:23:39  file_modified   feature-auth  feat/auth   src/auth.rs      │
+│ 10:23:10  agent_spawned   feature-api   feat/api    aider  PID 5678  │
+└──────────────────────────────────────────────────────────────────────┘
+ [q]uit  [s]ync  [r]un new agent  [d]elete world  [r]efresh
 ```
 
 **Keyboard nav:**
@@ -186,6 +192,8 @@ yggdrazil/
 │   ├── main.rs
 │   ├── cli/
 │   │   ├── init.rs
+│   │   ├── run.rs        # ygg run — managed agent launch + branch prompt
+│   │   ├── hook.rs       # ygg hook — cross-platform agent self-report
 │   │   ├── sync.rs
 │   │   └── daemon.rs
 │   ├── daemon/
