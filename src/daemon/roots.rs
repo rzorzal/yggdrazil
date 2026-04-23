@@ -2,7 +2,6 @@ use sysinfo::System;
 
 use crate::daemon::{laws, trunk};
 use crate::types::Agent;
-use chrono::Utc;
 
 const AGENT_BINARIES: &[&str] = &["claude", "claude-code", "codex", "aider", "cursor"];
 
@@ -50,9 +49,14 @@ pub fn scan_once(repo_root: &str, worlds_dir: &str) -> Vec<Agent> {
         .collect()
 }
 
-pub fn world_id_for_unmanaged_cwd(_repo_root: &std::path::Path, _cwd: &std::path::Path) -> String {
-    format!("unmanaged-{}", Utc::now().format("%Y%m%d-%H%M%S"))
+pub fn world_id_for_unmanaged_cwd(_repo_root: &std::path::Path, cwd: &std::path::Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cwd.hash(&mut h);
+    format!("unmanaged-{:x}", h.finish())
 }
+
+const POLL_INTERVAL_SECS: u64 = 30;
 
 pub async fn scan_loop(repo_root: &std::path::Path) {
     let worlds_dir = repo_root.join(".ygg").join("worlds");
@@ -61,34 +65,44 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
     let mut known_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     loop {
-        let mut sys = sysinfo::System::new_all();
+        // Get current PIDs from OS (for exit detection)
+        let mut sys = System::new_all();
         sys.refresh_processes();
+        let current_pids: std::collections::HashSet<u32> =
+            sys.processes().keys().map(|p| p.as_u32()).collect();
 
-        for proc in sys.processes().values() {
-            let Some(binary) = classify_binary(proc.name()) else { continue };
-            let Some(cwd) = proc.cwd() else { continue };
-            let cwd_str = cwd.to_string_lossy();
-            let pid = proc.pid().as_u32();
-
-            if known_pids.contains(&pid) { continue; }
+        // Use scan_once to get all repo agents (managed + unmanaged)
+        for agent in scan_once(&repo_str, &worlds_dir_str) {
+            let pid = agent.pid;
+            if known_pids.contains(&pid) {
+                continue;
+            }
             known_pids.insert(pid);
 
-            if cwd_str.starts_with(&worlds_dir_str) {
-                // Managed world — just log
-                tracing::info!("managed agent: {} PID {} in {}", binary, pid, cwd_str);
-            } else if cwd_str.starts_with(&repo_str) {
-                // Unmanaged — auto-create world
-                let world_id = world_id_for_unmanaged_cwd(repo_root, cwd);
-                tracing::warn!("unmanaged agent detected: {} PID {}, creating world {}", binary, pid, world_id);
+            if agent.world_id.is_empty() {
+                // Unmanaged agent
+                let cwd = sys.processes().values()
+                    .find(|p| p.pid().as_u32() == pid)
+                    .and_then(|p| p.cwd())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| repo_root.to_path_buf());
+                let world_id = world_id_for_unmanaged_cwd(repo_root, &cwd);
+                tracing::warn!(
+                    "unmanaged agent detected: {} PID {}, creating world {}",
+                    agent.binary, pid, world_id
+                );
                 if let Ok(world) = trunk::create_world(repo_root, &world_id, "HEAD") {
                     let _ = laws::inject_rules(&world.path, &world_id, "HEAD", &[]);
                 }
+            } else {
+                tracing::info!(
+                    "managed agent: {} PID {} in world {}",
+                    agent.binary, pid, agent.world_id
+                );
             }
         }
 
         // Detect exited agents
-        let current_pids: std::collections::HashSet<u32> = sys.processes().keys()
-            .map(|p| p.as_u32()).collect();
         known_pids.retain(|pid| {
             if current_pids.contains(pid) {
                 true
@@ -98,7 +112,7 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
             }
         });
 
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
     }
 }
 
@@ -119,15 +133,17 @@ mod tests {
     }
 
     #[test]
-    fn scan_once_returns_vec() {
+    fn scan_once_does_not_panic() {
         let agents = scan_once("/nonexistent/repo", "/nonexistent/worlds");
         let _ = agents;
     }
 
     #[test]
-    fn unmanaged_world_id_starts_with_prefix() {
+    fn unmanaged_world_id_is_stable_for_same_cwd() {
         use std::path::Path;
-        let id = world_id_for_unmanaged_cwd(Path::new("/repo"), Path::new("/repo"));
-        assert!(id.starts_with("unmanaged-"), "got: {id}");
+        let id1 = world_id_for_unmanaged_cwd(Path::new("/repo"), Path::new("/repo/subdir"));
+        let id2 = world_id_for_unmanaged_cwd(Path::new("/repo"), Path::new("/repo/subdir"));
+        assert!(id1.starts_with("unmanaged-"), "got: {id1}");
+        assert_eq!(id1, id2, "same CWD must produce same world id");
     }
 }
