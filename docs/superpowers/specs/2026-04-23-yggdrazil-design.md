@@ -73,10 +73,11 @@ Yggdrazil is a Rust CLI tool that governs parallel AI agent development via Git 
 ### 3.2 Trunk — Worktree Manager
 - Wraps `git worktree add .ygg/worlds/<name> -b <branch>` via `git2` crate.
 - `ygg init`: one-time setup — creates `.ygg/` structure, adds `.ygg/` to `.gitignore`, starts daemon.
-- **World creation via `ygg run <agent-cmd>`:**
+- **World creation via `ygg run <agent-cmd> [agent-args...]`:**
+  - Everything after the agent binary name passes through verbatim: `ygg run claude --resume=34343` → spawns `claude --resume=34343` inside the world dir.
   1. Prompt user: "Which branch for this session? [enter to use current HEAD]"
   2. If branch already in use by another world → warn: "World `<x>` already on `<branch>`. Continue? [y/n]"
-  3. Create worktree on that branch, inject Laws, spawn agent process inside world dir.
+  3. Create worktree on that branch, inject Laws, spawn agent process with all args inside world dir.
 - **World creation via Roots (unmanaged):** creates worktree on HEAD, world named `unmanaged-<timestamp>`.
 - Injects env vars into `.ygg/worlds/<name>/.env`: base port + world index (world 0 → PORT=3000, world 1 → PORT=3001).
 - Custom rules path via `--rules <path>` on `ygg init` applies globally to all worlds.
