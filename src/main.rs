@@ -97,10 +97,10 @@ fn main() -> Result<()> {
             println!("ygg monit — not yet implemented");
             Ok(())
         }
-        Commands::Daemon { action: _ } => {
-            println!("ygg daemon — not yet implemented");
-            Ok(())
-        }
+        Commands::Daemon { action } => match action {
+            DaemonAction::Start => cli::daemon_cmd::start(&root),
+            DaemonAction::Stop => cli::daemon_cmd::stop(&root),
+        },
         Commands::DaemonRun { repo_root } => {
             let path = PathBuf::from(repo_root);
             tokio::runtime::Runtime::new()?
