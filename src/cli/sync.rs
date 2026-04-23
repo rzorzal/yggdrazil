@@ -18,7 +18,7 @@ pub struct OverlapReport {
     pub range_b: (usize, usize),
 }
 
-/// Parse "@@ -start,count +start,count @@" → (start, start+count)
+/// Parse "@@ -start,count +start,count @@" → (start, start+count-1) inclusive end
 pub fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
     let inner = header.trim_start_matches("@@ ").split(" @@").next()?;
     let old_part = inner.split(' ').next()?; // "-10,5"
@@ -26,7 +26,7 @@ pub fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
     let mut parts = old_part.splitn(2, ',');
     let start: usize = parts.next()?.parse().ok()?;
     let count: usize = parts.next().unwrap_or("1").parse().ok()?;
-    Some((start, start + count))
+    Some((start, start + count.saturating_sub(1)))
 }
 
 /// Returns true if the two line ranges overlap (both inclusive).
@@ -175,7 +175,7 @@ mod tests {
     fn parse_hunk_header_extracts_line_range() {
         let (start, end) = parse_hunk_header("@@ -10,5 +10,8 @@").unwrap();
         assert_eq!(start, 10);
-        assert_eq!(end, 15);  // 10 + 5
+        assert_eq!(end, 14);  // inclusive: lines 10-14 (5 lines)
     }
 
     #[test]
