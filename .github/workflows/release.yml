@@ -1,13 +1,61 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
+  version:
+    name: Bump version and tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump version
+        id: bump
+        run: |
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          case "${{ github.event.inputs.bump }}" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH+1)) ;;
+          esac
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          sed -i "s/^version = \"${CURRENT}\"/version = \"${NEW}\"/" Cargo.toml
+          cargo update -p yggdrazil --precise "${NEW}"
+          echo "version=${NEW}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release v${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "v${{ steps.bump.outputs.version }}"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -30,6 +78,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: "v${{ needs.version.outputs.version }}"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -51,18 +101,19 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ygg-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ygg
-          echo "ASSET=target/${{ matrix.target }}/release/ygg-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
+          tar czf "ygg-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz" ygg
+          echo "ASSET=target/${{ matrix.target }}/release/ygg-v${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz" >> $GITHUB_ENV
 
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive ygg.exe ygg-${{ github.ref_name }}-${{ matrix.target }}.zip
-          echo "ASSET=target/${{ matrix.target }}/release/ygg-${{ github.ref_name }}-${{ matrix.target }}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cd target\${{ matrix.target }}\release
+          Compress-Archive ygg.exe "ygg-v${{ needs.version.outputs.version }}-${{ matrix.target }}.zip"
+          "ASSET=target\${{ matrix.target }}\release\ygg-v${{ needs.version.outputs.version }}-${{ matrix.target }}.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Upload to release
+      - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v${{ needs.version.outputs.version }}"
           files: ${{ env.ASSET }}
