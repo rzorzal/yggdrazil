@@ -1,6 +1,166 @@
 use crate::tui::AppState;
-use ratatui::Frame;
+use ratatui::{
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    Frame,
+};
 
-pub fn render(f: &mut Frame, _state: &AppState) {
-    let _ = f;
+pub fn world_rows(state: &AppState) -> Vec<String> {
+    state
+        .worlds
+        .iter()
+        .map(|w| {
+            let status = if state.agents.iter().any(|a| a.world_id == w.id) {
+                "●"
+            } else {
+                "○"
+            };
+            let unmanaged = if !w.managed { " (unmanaged)" } else { "" };
+            format!("{status} {}  {}{}", w.id, w.branch, unmanaged)
+        })
+        .collect()
+}
+
+pub fn render(f: &mut Frame, state: &AppState) {
+    let size = f.size();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(20),
+            Constraint::Percentage(45),
+        ])
+        .split(size);
+
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(chunks[0]);
+
+    // Worlds panel
+    let world_items: Vec<ListItem> = state
+        .worlds
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let status = if state.agents.iter().any(|a| a.world_id == w.id) { "●" } else { "○" };
+            let flag = if !w.managed { " ⚠" } else { "" };
+            let style = if i == state.selected_world {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{status} {}  {}{}", w.id, w.branch, flag)).style(style)
+        })
+        .collect();
+    let worlds_list = List::new(world_items)
+        .block(Block::default().title("Worlds  [Branch]").borders(Borders::ALL));
+    f.render_widget(worlds_list, top[0]);
+
+    // Agents panel
+    let header = Row::new(vec!["PID", "Agent", "World", "Branch", "File"])
+        .style(Style::default().add_modifier(Modifier::BOLD));
+    let rows: Vec<Row> = state
+        .agents
+        .iter()
+        .map(|a| {
+            let file = a.active_files.first().map(|s| s.as_str()).unwrap_or("-");
+            let branch = state
+                .worlds
+                .iter()
+                .find(|w| w.id == a.world_id)
+                .map(|w| w.branch.as_str())
+                .unwrap_or("-");
+            Row::new(vec![
+                a.pid.to_string(),
+                a.binary.clone(),
+                a.world_id.clone(),
+                branch.to_string(),
+                file.to_string(),
+            ])
+        })
+        .collect();
+    let agents_table = Table::new(
+        rows,
+        [
+            Constraint::Length(7),
+            Constraint::Length(12),
+            Constraint::Length(16),
+            Constraint::Length(16),
+            Constraint::Min(0),
+        ],
+    )
+    .header(header)
+    .block(Block::default().title("Active Agents").borders(Borders::ALL));
+    f.render_widget(agents_table, top[1]);
+
+    // Conflicts panel
+    let conflict_items: Vec<ListItem> = if state.conflicts.is_empty() {
+        vec![ListItem::new("No conflicts detected").style(Style::default().fg(Color::Green))]
+    } else {
+        state
+            .conflicts
+            .iter()
+            .map(|c| {
+                ListItem::new(format!("⚠ {} — {}", c.file, c.worlds.join(" + ")))
+                    .style(Style::default().fg(Color::Red))
+            })
+            .collect()
+    };
+    let conflicts_list = List::new(conflict_items)
+        .block(Block::default().title("⚠ Conflicts").borders(Borders::ALL));
+    f.render_widget(conflicts_list, chunks[1]);
+
+    // Audit log panel
+    let log_items: Vec<ListItem> = state
+        .audit_log
+        .iter()
+        .rev()
+        .skip(state.audit_scroll)
+        .take(20)
+        .map(|e| {
+            let time = e.ts.format("%H:%M:%S").to_string();
+            let file = e.file.as_deref().unwrap_or("");
+            ListItem::new(format!("{}  {:?}  {}  {}", time, e.event, e.world, file))
+        })
+        .collect();
+    let log_list = List::new(log_items).block(
+        Block::default()
+            .title("Audit Log  [j/k scroll]")
+            .borders(Borders::ALL),
+    );
+    f.render_widget(log_list, chunks[2]);
+
+    // Status bar
+    let help = Paragraph::new("[q]uit  [s]ync  [r]un new agent  [d]elete world  [↑↓]select  [Enter]detail");
+    f.render_widget(help, ratatui::layout::Rect { y: size.height.saturating_sub(1), height: 1, ..size });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::AppState;
+    use crate::types::World;
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    #[test]
+    fn worlds_table_rows_match_state() {
+        let state = AppState {
+            worlds: vec![World {
+                id: "feat-auth".into(),
+                branch: "feat/auth".into(),
+                path: PathBuf::from("/tmp"),
+                managed: true,
+                created_at: Utc::now(),
+            }],
+            ..Default::default()
+        };
+        let rows = world_rows(&state);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("feat-auth"));
+        assert!(rows[0].contains("feat/auth"));
+    }
 }
