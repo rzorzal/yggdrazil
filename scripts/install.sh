@@ -17,7 +17,6 @@ case "$OS" in
       aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
       *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
     esac
-    EXT="tar.gz"
     ;;
   Darwin)
     case "$ARCH" in
@@ -25,7 +24,6 @@ case "$OS" in
       arm64)   TARGET="aarch64-apple-darwin" ;;
       *) echo "Unsupported architecture: $ARCH" && exit 1 ;;
     esac
-    EXT="tar.gz"
     ;;
   *)
     echo "Unsupported OS: $OS. Use the Windows installer from GitHub Releases."
@@ -42,7 +40,7 @@ if [ -z "$LATEST" ]; then
   exit 1
 fi
 
-FILENAME="${BIN_NAME}-${LATEST}-${TARGET}.${EXT}"
+FILENAME="${BIN_NAME}-${LATEST}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${FILENAME}"
 
 echo "Installing ygg ${LATEST} for ${TARGET}..."
@@ -52,8 +50,15 @@ trap 'rm -rf "$TMP"' EXIT
 
 curl -sSfL "$URL" -o "$TMP/$FILENAME"
 tar xzf "$TMP/$FILENAME" -C "$TMP"
+chmod 755 "$TMP/$BIN_NAME"
 
-install -m 755 "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+# Install: use sudo if INSTALL_DIR not writable, else direct copy
+if [ -w "$INSTALL_DIR" ]; then
+  cp "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+else
+  echo "Need sudo to write to $INSTALL_DIR"
+  sudo cp "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+fi
 
-echo "✓ ygg ${LATEST} installed to ${INSTALL_DIR}/${BIN_NAME}"
-echo "  Run: ygg init"
+echo "Installed to ${INSTALL_DIR}/${BIN_NAME}"
+echo "Run: ygg init"
