@@ -6,6 +6,8 @@ pub mod trunk;
 use crate::ipc::server::IpcServer;
 use anyhow::Result;
 use std::path::PathBuf;
+#[cfg(unix)]
+use libc;
 
 pub struct Daemon {
     pub repo_root: PathBuf,
@@ -87,6 +89,49 @@ impl Daemon {
                     crate::types::IpcMessage::Subscribe => {
                         tracing::debug!("new TUI subscriber");
                     }
+                    crate::types::IpcMessage::DeleteWorld { world_id } => {
+                        tracing::info!("delete world request: {}", world_id);
+
+                        // Kill active agent for this world if found
+                        let worlds_dir = repo_root.join(".ygg").join("worlds");
+                        let agents = crate::daemon::roots::scan_once(
+                            repo_root.to_str().unwrap_or(""),
+                            worlds_dir.to_str().unwrap_or(""),
+                        );
+                        if let Some(agent) = agents.iter().find(|a| a.world_id == world_id) {
+                            tracing::info!("killing agent PID {} for world {}", agent.pid, world_id);
+                            #[cfg(unix)]
+                            unsafe {
+                                libc::kill(agent.pid as libc::pid_t, libc::SIGTERM);
+                            }
+                        }
+
+                        // Remove the worktree
+                        match crate::daemon::trunk::delete_world(&repo_root, &world_id) {
+                            Ok(()) => {
+                                tracing::info!("world {} deleted", world_id);
+                                if let Ok(mut log) = bus::AuditLog::open(&log_path) {
+                                    let _ = log.append(&crate::types::AuditEvent {
+                                        ts: chrono::Utc::now(),
+                                        event: crate::types::EventKind::WorldDeleted,
+                                        world: world_id.clone(),
+                                        agent: None,
+                                        pid: None,
+                                        file: None,
+                                        files: None,
+                                        worlds: None,
+                                    });
+                                }
+                                let _ = tx.send(crate::types::IpcMessage::WorldDeleted {
+                                    world_id: world_id.clone(),
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!("delete_world failed for {}: {}", world_id, e);
+                                // Do not broadcast — TUI keeps world in list
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -156,6 +201,31 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_world_nonexistent_does_not_panic() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ygg/worlds")).unwrap();
+        std::fs::write(dir.path().join(".ygg/shared_memory.json"), "").unwrap();
+
+        let repo_root = dir.path().to_path_buf();
+        let handle = tokio::spawn(Daemon::run(repo_root.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let sock = crate::ipc::socket_path(dir.path());
+        let mut client = crate::ipc::client::IpcClient::connect(&sock).await.unwrap();
+        client.send(&crate::types::IpcMessage::Subscribe).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        client.send(&crate::types::IpcMessage::DeleteWorld {
+            world_id: "nonexistent".into(),
+        }).await.unwrap();
+
+        // Give daemon time to process without panicking
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        handle.abort();
+        // Reaching here = no panic
     }
 
     #[tokio::test]

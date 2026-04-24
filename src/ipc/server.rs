@@ -42,12 +42,17 @@ impl IpcServer {
 
             let (read_half, mut write_half) = tokio::io::split(conn);
 
-            // Write task: forward EventNotification broadcast messages to this client
+            // Write task: forward EventNotification, StateSnapshot, and WorldDeleted broadcast messages to this client
             tokio::spawn(async move {
                 loop {
                     match rx.recv().await {
                         Ok(msg) => {
-                            if !matches!(msg, IpcMessage::EventNotification { .. }) {
+                            if !matches!(
+                                msg,
+                                IpcMessage::EventNotification { .. }
+                                    | IpcMessage::StateSnapshot { .. }
+                                    | IpcMessage::WorldDeleted { .. }
+                            ) {
                                 continue;
                             }
                             match serde_json::to_string(&msg) {
