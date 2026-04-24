@@ -38,7 +38,7 @@ impl Daemon {
 
                         if let Ok(mut log) = bus::AuditLog::open(&log_path) {
                             for file in &files {
-                                let _ = log.append(&crate::types::AuditEvent {
+                                let event = crate::types::AuditEvent {
                                     ts: chrono::Utc::now(),
                                     event: crate::types::EventKind::FileModified,
                                     world: world.clone(),
@@ -47,6 +47,10 @@ impl Daemon {
                                     file: Some(file.clone()),
                                     files: None,
                                     worlds: None,
+                                };
+                                let _ = log.append(&event);
+                                let _ = tx.send(crate::types::IpcMessage::EventNotification {
+                                    event,
                                 });
                             }
 
@@ -107,6 +111,49 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         assert!(sock.exists(), "socket should exist after daemon start");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn hook_report_broadcasts_file_modified_event() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ygg/worlds")).unwrap();
+        std::fs::write(dir.path().join(".ygg/shared_memory.json"), "").unwrap();
+
+        let repo_root = dir.path().to_path_buf();
+        let handle = tokio::spawn(Daemon::run(repo_root.clone()));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let sock = crate::ipc::socket_path(dir.path());
+        let mut client = crate::ipc::client::IpcClient::connect(&sock).await.unwrap();
+        // Subscribe so write task starts forwarding
+        client.send(&crate::types::IpcMessage::Subscribe).await.unwrap();
+        // Give daemon time to register the write task
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        client.send(&crate::types::IpcMessage::HookReport {
+            world: "feat-auth".into(),
+            files: vec!["src/auth.rs".into()],
+        }).await.unwrap();
+
+        let received = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            client.recv(),
+        ).await.unwrap().unwrap();
+
+        assert!(
+            matches!(
+                &received,
+                crate::types::IpcMessage::EventNotification {
+                    event: crate::types::AuditEvent {
+                        event: crate::types::EventKind::FileModified,
+                        ..
+                    }
+                }
+            ),
+            "expected FileModified EventNotification, got {:?}", received
+        );
+
         handle.abort();
     }
 
