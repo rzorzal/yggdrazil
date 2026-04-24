@@ -102,6 +102,32 @@ fn spawn_ipc_thread(
     });
 }
 
+pub fn handle_d_key(state: &mut AppState) {
+    if let Some(w) = state.worlds.get(state.selected_world) {
+        state.confirm_delete = Some(w.id.clone());
+    }
+}
+
+pub fn handle_cancel_confirm(state: &mut AppState) {
+    state.confirm_delete = None;
+    state.status_msg = None;
+}
+
+pub fn handle_confirm_delete(state: &mut AppState) {
+    let world_id = match state.confirm_delete.take() {
+        Some(id) => id,
+        None => return,
+    };
+    match &state.ipc_tx {
+        Some(tx) => {
+            let _ = tx.send(crate::types::IpcMessage::DeleteWorld { world_id });
+        }
+        None => {
+            state.status_msg = Some("daemon not running".into());
+        }
+    }
+}
+
 pub fn run_tui(repo_root: &Path) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -140,6 +166,19 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
 
         if event::poll(Duration::from_millis(500))? {
             if let Event::Key(key) = event::read()? {
+                // Clear transient status on any keypress
+                state.status_msg = None;
+
+                // Confirmation overlay takes priority over normal key handling
+                if state.confirm_delete.is_some() {
+                    match key.code {
+                        KeyCode::Char('y') => handle_confirm_delete(&mut state),
+                        KeyCode::Char('n') | KeyCode::Esc => handle_cancel_confirm(&mut state),
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match (&state.view, key.code) {
                     (View::Dashboard, KeyCode::Char('q')) => break,
                     (View::Dashboard, KeyCode::Up) => {
@@ -166,6 +205,7 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
                     (View::Dashboard, KeyCode::Char('k')) => {
                         if state.audit_scroll > 0 { state.audit_scroll -= 1; }
                     }
+                    (View::Dashboard, KeyCode::Char('d')) => handle_d_key(&mut state),
                     _ => {}
                 }
             }
@@ -330,5 +370,65 @@ mod tests {
         });
         assert_eq!(state.worlds.len(), 1);
         assert_eq!(state.selected_world, 0, "should clamp to last valid index");
+    }
+
+    #[test]
+    fn d_key_sets_confirm_delete_for_selected_world() {
+        use crate::types::World;
+        use std::path::PathBuf;
+
+        let mut state = AppState {
+            worlds: vec![World {
+                id: "feat-auth".into(),
+                branch: "feat/auth".into(),
+                path: PathBuf::from("/tmp"),
+                managed: true,
+                created_at: chrono::Utc::now(),
+            }],
+            selected_world: 0,
+            ..Default::default()
+        };
+        handle_d_key(&mut state);
+        assert_eq!(state.confirm_delete, Some("feat-auth".into()));
+    }
+
+    #[test]
+    fn n_key_cancels_confirm_delete() {
+        let mut state = AppState {
+            confirm_delete: Some("feat-auth".into()),
+            ..Default::default()
+        };
+        handle_cancel_confirm(&mut state);
+        assert!(state.confirm_delete.is_none());
+        assert!(state.status_msg.is_none());
+    }
+
+    #[test]
+    fn y_key_without_daemon_sets_status_msg() {
+        let mut state = AppState {
+            confirm_delete: Some("feat-auth".into()),
+            ipc_tx: None,
+            ..Default::default()
+        };
+        handle_confirm_delete(&mut state);
+        assert!(state.confirm_delete.is_none());
+        assert_eq!(state.status_msg.as_deref(), Some("daemon not running"));
+    }
+
+    #[test]
+    fn y_key_with_daemon_sends_delete_world() {
+        use crate::types::IpcMessage;
+
+        let (tx, rx) = std::sync::mpsc::channel::<IpcMessage>();
+        let mut state = AppState {
+            confirm_delete: Some("feat-auth".into()),
+            ipc_tx: Some(tx),
+            ..Default::default()
+        };
+        handle_confirm_delete(&mut state);
+        assert!(state.confirm_delete.is_none());
+        assert!(state.status_msg.is_none());
+        let sent = rx.try_recv().expect("should have sent DeleteWorld");
+        assert!(matches!(sent, IpcMessage::DeleteWorld { world_id } if world_id == "feat-auth"));
     }
 }
