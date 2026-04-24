@@ -48,12 +48,19 @@ pub fn render(f: &mut Frame, state: &AppState) {
         .map(|(i, w)| {
             let status = if state.agents.iter().any(|a| a.world_id == w.id) { "●" } else { "○" };
             let flag = if !w.managed { " ⚠" } else { "" };
+            let files = state.agent_states.get(&w.id).cloned().unwrap_or_default();
+            let file_hint = if files.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", files.join(", "))
+            };
             let style = if i == state.selected_world {
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            ListItem::new(format!("{status} {}  {}{}", w.id, w.branch, flag)).style(style)
+            ListItem::new(format!("{status} {}  {}{}{}", w.id, w.branch, flag, file_hint))
+                .style(style)
         })
         .collect();
     let worlds_list = List::new(world_items)

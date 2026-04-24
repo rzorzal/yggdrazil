@@ -26,6 +26,7 @@ pub struct AppState {
     pub confirm_delete: Option<String>,
     pub ipc_tx: Option<std::sync::mpsc::Sender<crate::types::IpcMessage>>,
     pub status_msg: Option<String>,
+    pub agent_states: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[derive(Default, PartialEq)]
@@ -128,6 +129,32 @@ pub fn handle_confirm_delete(state: &mut AppState) {
     }
 }
 
+fn load_shared_memory(repo_root: &Path) -> std::collections::HashMap<String, Vec<String>> {
+    let path = repo_root.join(".ygg").join("shared_memory.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Default::default();
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Default::default();
+    };
+    let Some(obj) = parsed.as_object() else {
+        return Default::default();
+    };
+    obj.iter()
+        .map(|(world_id, entry)| {
+            let files = entry["files"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (world_id.clone(), files)
+        })
+        .collect()
+}
+
 pub fn run_tui(repo_root: &Path) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -144,6 +171,7 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         state.audit_log = audit_log.read_recent(100, 24)?;
         state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
     }
+    state.agent_states = load_shared_memory(repo_root);
 
     let evt_rx: Option<std::sync::mpsc::Receiver<crate::types::IpcMessage>> = {
         let socket_path = crate::ipc::socket_path(repo_root);
@@ -217,6 +245,8 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
                 apply_ipc_msg(&mut state, msg);
             }
         }
+
+        state.agent_states = load_shared_memory(repo_root);
     }
 
     disable_raw_mode()?;
