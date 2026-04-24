@@ -30,6 +30,7 @@ pub enum EventKind {
     WarningInjected,
     WorldCreated,
     WorldMerged,
+    WorldDeleted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +65,8 @@ pub enum IpcMessage {
     EventNotification {
         event: AuditEvent,
     },
+    DeleteWorld { world_id: String },
+    WorldDeleted { world_id: String },
 }
 
 #[cfg(test)]
@@ -94,5 +97,34 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: IpcMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(decoded, IpcMessage::Subscribe));
+    }
+
+    #[test]
+    fn ipc_delete_world_roundtrips() {
+        let msg = IpcMessage::DeleteWorld { world_id: "feat-auth".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: IpcMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, IpcMessage::DeleteWorld { world_id } if world_id == "feat-auth"));
+    }
+
+    #[test]
+    fn ipc_world_deleted_roundtrips() {
+        let msg = IpcMessage::WorldDeleted { world_id: "feat-auth".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: IpcMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, IpcMessage::WorldDeleted { world_id } if world_id == "feat-auth"));
+    }
+
+    #[test]
+    fn event_kind_world_deleted_roundtrips() {
+        let event = AuditEvent {
+            ts: chrono::Utc::now(),
+            event: EventKind::WorldDeleted,
+            world: "feat-auth".into(),
+            agent: None, pid: None, file: None, files: None, worlds: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.event, EventKind::WorldDeleted);
     }
 }
