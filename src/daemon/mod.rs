@@ -115,7 +115,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Task 2 (server write task) and Task 3 (persistent BufReader) to pass"]
     async fn hook_report_broadcasts_file_modified_event() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".ygg/worlds")).unwrap();
