@@ -73,6 +73,9 @@ impl IpcServer {
                 while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
                     if let Ok(msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
                         handler(msg.clone()).await;
+                        // Re-broadcast so other components can observe all messages;
+                        // the write task filters to EventNotification only, so clients
+                        // never receive their own sent messages echoed back.
                         let _ = tx.send(msg);
                     }
                     line.clear();

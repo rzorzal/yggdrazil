@@ -13,6 +13,8 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
+const AUDIT_CAP: usize = 500;
+
 #[derive(Default)]
 pub struct AppState {
     pub worlds: Vec<World>,
@@ -46,7 +48,7 @@ fn spawn_ipc_listener(repo_root: std::path::PathBuf, tx: mpsc::Sender<crate::typ
                             break; // TUI exited, receiver dropped
                         }
                     }
-                    Err(_) => break, // daemon disconnected or EOF
+                    Err(_) => break, // daemon disconnected or EOF; no reconnect on daemon restart
                     _ => {}
                 }
             }
@@ -114,7 +116,6 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         }
 
         // Drain IPC events into state
-        const AUDIT_CAP: usize = 500;
         let mut got_new = false;
         while let Ok(event) = ipc_rx.try_recv() {
             state.audit_log.push(event);
@@ -136,7 +137,6 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Agent, Conflict, World};
 
     #[test]
     fn app_state_default_is_empty() {
