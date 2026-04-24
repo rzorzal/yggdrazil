@@ -16,7 +16,7 @@ pub struct Daemon {
 impl Daemon {
     pub async fn run(repo_root: PathBuf) -> Result<()> {
         let sock = crate::ipc::socket_path(&repo_root);
-        let log_path = crate::ipc::shared_memory_path(&repo_root);
+        let log_path = crate::ipc::audit_log_path(&repo_root);
         let mut server = IpcServer::new(&sock).await?;
         let tx = server.tx.clone();
 

@@ -138,9 +138,9 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
 
     // Load initial state from files
     state.worlds = crate::daemon::trunk::list_worlds(repo_root).unwrap_or_default();
-    let log_path = repo_root.join(".ygg").join("shared_memory.json");
-    if log_path.exists() {
-        let audit_log = crate::daemon::bus::AuditLog::open(&log_path)?;
+    let audit_log_path = crate::ipc::audit_log_path(repo_root);
+    if audit_log_path.exists() {
+        let audit_log = crate::daemon::bus::AuditLog::open(&audit_log_path)?;
         state.audit_log = audit_log.read_recent(100, 24)?;
         state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
     }
