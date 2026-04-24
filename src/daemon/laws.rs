@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use std::path::Path;
 
+
 const PROTOCOL_TEMPLATE: &str = "<!-- YGGDRAZIL PROTOCOL ACTIVE -->\n\
 # Yggdrazil Governance Protocol\n\
 \n\
@@ -62,6 +63,73 @@ pub fn inject_rules(
         )?;
     }
 
+    // .claude/ governance files — world-specific with hardcoded world_id
+    let claude_dir = world_path.join(".claude");
+    let hooks_dir = claude_dir.join("hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+
+    // PostToolUse hook script — extracts file_path from Claude's stdin JSON
+    let post_tool_script = hooks_dir.join("ygg-post-tool.sh");
+    if !post_tool_script.exists() {
+        let script = format!(
+            "#!/usr/bin/env bash\n\
+             # Yggdrazil PostToolUse hook for world {world_id}\n\
+             file=$(python3 -c \"\
+             import sys,json; \
+             d=json.load(sys.stdin); \
+             print(d.get('tool_input',{{}}).get('file_path',''))\
+             \" 2>/dev/null)\n\
+             [ -n \"$file\" ] && ygg hook --world {world_id} --files \"$file\" 2>/dev/null\n\
+             exit 0\n"
+        );
+        std::fs::write(&post_tool_script, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&post_tool_script, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    // Stop hook script
+    let stop_script = hooks_dir.join("ygg-stop.sh");
+    if !stop_script.exists() {
+        let script = format!(
+            "#!/usr/bin/env bash\n\
+             # Yggdrazil Stop hook for world {world_id}\n\
+             ygg hook --world {world_id} 2>/dev/null\n\
+             exit 0\n"
+        );
+        std::fs::write(&stop_script, script)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stop_script, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    // settings.json referencing the hook scripts
+    let settings_path = claude_dir.join("settings.json");
+    if !settings_path.exists() {
+        let settings = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Write|Edit|MultiEdit",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "bash .claude/hooks/ygg-post-tool.sh"
+                    }]
+                }],
+                "Stop": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("bash .claude/hooks/ygg-stop.sh")
+                    }]
+                }]
+            }
+        });
+        std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    }
+
     Ok(())
 }
 
@@ -110,6 +178,37 @@ mod tests {
         assert!(claude_md.contains("CONFLICT WARNING"));
         assert!(claude_md.contains("src/auth.rs"));
         assert!(claude_md.contains("feat-api"));
+    }
+
+    #[test]
+    fn inject_writes_claude_settings_json() {
+        let dir = tempdir().unwrap();
+        inject_rules(dir.path(), "feat-auth", "main", &[]).unwrap();
+
+        let settings_path = dir.path().join(".claude/settings.json");
+        assert!(settings_path.exists(), ".claude/settings.json should be created");
+
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed["hooks"]["PostToolUse"].is_array());
+        assert!(parsed["hooks"]["Stop"].is_array());
+
+        // World id is embedded in the stop script, not the settings command
+        let stop_script_content =
+            std::fs::read_to_string(dir.path().join(".claude/hooks/ygg-stop.sh")).unwrap();
+        assert!(
+            stop_script_content.contains("feat-auth"),
+            "Stop hook script must reference world id"
+        );
+
+        assert!(
+            dir.path().join(".claude/hooks/ygg-post-tool.sh").exists(),
+            "ygg-post-tool.sh hook script should be created"
+        );
+        assert!(
+            dir.path().join(".claude/hooks/ygg-stop.sh").exists(),
+            "ygg-stop.sh hook script should be created"
+        );
     }
 
     #[test]
