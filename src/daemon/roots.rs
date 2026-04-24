@@ -73,7 +73,8 @@ pub async fn scan_loop(
         let current_pids: std::collections::HashSet<u32> =
             sys.processes().keys().map(|p| p.as_u32()).collect();
 
-        for agent in scan_once(&repo_str, &worlds_dir_str) {
+        let agents_snapshot = scan_once(&repo_str, &worlds_dir_str);
+        for agent in &agents_snapshot {
             let pid = agent.pid;
             if known_pids.contains(&pid) {
                 continue;
@@ -123,7 +124,7 @@ pub async fn scan_loop(
 
         // Broadcast current state to all TUI subscribers
         let worlds = trunk::list_worlds(repo_root).unwrap_or_default();
-        let agents = scan_once(&repo_str, &worlds_dir_str);
+        let agents = agents_snapshot;
         let conflicts = {
             let log_path = repo_root.join(".ygg").join("shared_memory.json");
             if log_path.exists() {
@@ -202,6 +203,6 @@ mod tests {
 
         handle.abort();
         // snapshot arrives within the first cycle
-        assert!(result.is_ok(), "timeout waiting for StateSnapshot");
+        assert_eq!(result, Ok(true), "expected StateSnapshot within 2s");
     }
 }
