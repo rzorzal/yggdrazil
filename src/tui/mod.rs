@@ -1,8 +1,7 @@
 pub mod dashboard;
 pub mod world_detail;
 
-use crate::ipc::client::IpcClient;
-use crate::types::{Agent, AuditEvent, Conflict, IpcMessage, World};
+use crate::types::{Agent, AuditEvent, Conflict, World};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -10,7 +9,6 @@ use crossterm::ExecutableCommand;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 
 const AUDIT_CAP: usize = 500;
@@ -25,6 +23,9 @@ pub struct AppState {
     pub view: View,
     pub audit_scroll: usize,
     pub world_env: Option<String>,
+    pub confirm_delete: Option<String>,
+    pub ipc_tx: Option<std::sync::mpsc::Sender<crate::types::IpcMessage>>,
+    pub status_msg: Option<String>,
 }
 
 #[derive(Default, PartialEq)]
@@ -34,22 +35,64 @@ pub enum View {
     WorldDetail(String),
 }
 
-fn spawn_ipc_listener(repo_root: std::path::PathBuf, tx: mpsc::Sender<crate::types::AuditEvent>) {
+pub fn apply_ipc_msg(state: &mut AppState, msg: crate::types::IpcMessage) {
+    use crate::types::IpcMessage;
+    match msg {
+        IpcMessage::StateSnapshot { worlds, agents, conflicts } => {
+            state.worlds = worlds;
+            state.agents = agents;
+            state.conflicts = conflicts;
+        }
+        IpcMessage::EventNotification { event } => {
+            state.audit_log.push(event);
+            if state.audit_log.len() > AUDIT_CAP {
+                state.audit_log.drain(..state.audit_log.len() - AUDIT_CAP);
+            }
+            state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
+        }
+        IpcMessage::WorldDeleted { world_id } => {
+            state.worlds.retain(|w| w.id != world_id);
+            if state.selected_world >= state.worlds.len() && !state.worlds.is_empty() {
+                state.selected_world = state.worlds.len() - 1;
+            }
+            state.confirm_delete = None;
+        }
+        _ => {}
+    }
+}
+
+fn spawn_ipc_thread(
+    repo_root: std::path::PathBuf,
+    evt_tx: std::sync::mpsc::Sender<crate::types::IpcMessage>,
+    cmd_rx: std::sync::mpsc::Receiver<crate::types::IpcMessage>,
+) {
     std::thread::spawn(move || {
         let Ok(rt) = tokio::runtime::Runtime::new() else { return };
         rt.block_on(async move {
             let sock = crate::ipc::socket_path(&repo_root);
-            let Ok(mut client) = IpcClient::connect(&sock).await else { return };
-            let _ = client.send(&IpcMessage::Subscribe).await;
+            let Ok(mut client) = crate::ipc::client::IpcClient::connect(&sock).await else {
+                return;
+            };
+            let _ = client.send(&crate::types::IpcMessage::Subscribe).await;
             loop {
-                match client.recv().await {
-                    Ok(IpcMessage::EventNotification { event }) => {
-                        if tx.send(event).is_err() {
-                            break; // TUI exited, receiver dropped
-                        }
+                // Drain outgoing commands (non-blocking)
+                while let Ok(cmd) = cmd_rx.try_recv() {
+                    if client.send(&cmd).await.is_err() {
+                        return;
                     }
-                    Err(_) => break, // daemon disconnected or EOF; no reconnect on daemon restart
-                    _ => {}
+                }
+                // Receive one incoming message with 100ms timeout
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    client.recv(),
+                )
+                .await
+                {
+                    Ok(Ok(msg)) => {
+                        let _ = evt_tx.send(msg);
+                    }
+                    Ok(Err(_)) => return, // daemon disconnected
+                    Err(_) => {}          // timeout, loop again
                 }
             }
         });
@@ -73,8 +116,13 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
     }
 
-    let (ipc_tx, ipc_rx) = mpsc::channel::<crate::types::AuditEvent>();
-    spawn_ipc_listener(repo_root.to_path_buf(), ipc_tx);
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
+    let (evt_tx, evt_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
+    let socket_path = crate::ipc::socket_path(repo_root);
+    if socket_path.exists() {
+        spawn_ipc_thread(repo_root.to_path_buf(), evt_tx, cmd_rx);
+        state.ipc_tx = Some(cmd_tx);
+    }
 
     loop {
         terminal.draw(|f| match &state.view {
@@ -115,17 +163,9 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
             }
         }
 
-        // Drain IPC events into state
-        let mut got_new = false;
-        while let Ok(event) = ipc_rx.try_recv() {
-            state.audit_log.push(event);
-            got_new = true;
-        }
-        if state.audit_log.len() > AUDIT_CAP {
-            state.audit_log.drain(..state.audit_log.len() - AUDIT_CAP);
-        }
-        if got_new {
-            state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
+        // Drain IPC messages into state
+        while let Ok(msg) = evt_rx.try_recv() {
+            apply_ipc_msg(&mut state, msg);
         }
     }
 
@@ -148,11 +188,79 @@ mod tests {
     }
 
     #[test]
-    fn ipc_events_appended_to_audit_log() {
-        use crate::types::{AuditEvent, EventKind};
-        use std::sync::mpsc;
+    fn confirm_delete_starts_none() {
+        let state = AppState::default();
+        assert!(state.confirm_delete.is_none());
+        assert!(state.ipc_tx.is_none());
+        assert!(state.status_msg.is_none());
+    }
 
-        let (tx, rx) = mpsc::channel::<AuditEvent>();
+    #[test]
+    fn apply_ipc_msg_state_snapshot_replaces_state() {
+        use crate::types::{IpcMessage, World};
+        use std::path::PathBuf;
+
+        let world = World {
+            id: "feat-auth".into(),
+            branch: "feat/auth".into(),
+            path: PathBuf::from("/tmp"),
+            managed: true,
+            created_at: chrono::Utc::now(),
+        };
+        let mut state = AppState::default();
+        apply_ipc_msg(&mut state, IpcMessage::StateSnapshot {
+            worlds: vec![world.clone()],
+            agents: vec![],
+            conflicts: vec![],
+        });
+        assert_eq!(state.worlds.len(), 1);
+        assert_eq!(state.worlds[0].id, "feat-auth");
+        assert!(state.agents.is_empty());
+    }
+
+    #[test]
+    fn apply_ipc_msg_world_deleted_removes_world_and_clears_confirm() {
+        use crate::types::{IpcMessage, World};
+        use std::path::PathBuf;
+
+        let mut state = AppState {
+            worlds: vec![World {
+                id: "feat-auth".into(),
+                branch: "feat/auth".into(),
+                path: PathBuf::from("/tmp"),
+                managed: true,
+                created_at: chrono::Utc::now(),
+            }],
+            confirm_delete: Some("feat-auth".into()),
+            ..Default::default()
+        };
+        apply_ipc_msg(&mut state, IpcMessage::WorldDeleted { world_id: "feat-auth".into() });
+        assert!(state.worlds.is_empty());
+        assert!(state.confirm_delete.is_none());
+    }
+
+    #[test]
+    fn apply_ipc_msg_event_notification_appends_to_log() {
+        use crate::types::{AuditEvent, EventKind, IpcMessage};
+
+        let mut state = AppState::default();
+        let event = AuditEvent {
+            ts: chrono::Utc::now(),
+            event: EventKind::FileModified,
+            world: "feat-auth".into(),
+            agent: None, pid: None,
+            file: Some("src/lib.rs".into()),
+            files: None, worlds: None,
+        };
+        apply_ipc_msg(&mut state, IpcMessage::EventNotification { event });
+        assert_eq!(state.audit_log.len(), 1);
+    }
+
+    #[test]
+    fn ipc_events_appended_to_audit_log() {
+        use crate::types::{AuditEvent, EventKind, IpcMessage};
+
+        let (tx, rx) = std::sync::mpsc::channel::<IpcMessage>();
 
         let event1 = AuditEvent {
             ts: chrono::Utc::now(),
@@ -171,18 +279,13 @@ mod tests {
             files: None, worlds: None,
         };
 
-        tx.send(event1).unwrap();
-        tx.send(event2).unwrap();
+        tx.send(IpcMessage::EventNotification { event: event1 }).unwrap();
+        tx.send(IpcMessage::EventNotification { event: event2 }).unwrap();
         drop(tx);
 
         let mut state = AppState::default();
-        let mut got_new = false;
-        while let Ok(event) = rx.try_recv() {
-            state.audit_log.push(event);
-            got_new = true;
-        }
-        if got_new {
-            state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
+        while let Ok(msg) = rx.try_recv() {
+            apply_ipc_msg(&mut state, msg);
         }
 
         assert_eq!(state.audit_log.len(), 2);
