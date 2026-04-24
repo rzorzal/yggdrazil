@@ -42,6 +42,9 @@ pub fn apply_ipc_msg(state: &mut AppState, msg: crate::types::IpcMessage) {
             state.worlds = worlds;
             state.agents = agents;
             state.conflicts = conflicts;
+            if state.selected_world >= state.worlds.len() && !state.worlds.is_empty() {
+                state.selected_world = state.worlds.len() - 1;
+            }
         }
         IpcMessage::EventNotification { event } => {
             state.audit_log.push(event);
@@ -116,13 +119,18 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
     }
 
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
-    let (evt_tx, evt_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
-    let socket_path = crate::ipc::socket_path(repo_root);
-    if socket_path.exists() {
-        spawn_ipc_thread(repo_root.to_path_buf(), evt_tx, cmd_rx);
-        state.ipc_tx = Some(cmd_tx);
-    }
+    let evt_rx: Option<std::sync::mpsc::Receiver<crate::types::IpcMessage>> = {
+        let socket_path = crate::ipc::socket_path(repo_root);
+        if socket_path.exists() {
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
+            let (evt_tx, evt_rx) = std::sync::mpsc::channel::<crate::types::IpcMessage>();
+            spawn_ipc_thread(repo_root.to_path_buf(), evt_tx, cmd_rx);
+            state.ipc_tx = Some(cmd_tx);
+            Some(evt_rx)
+        } else {
+            None
+        }
+    };
 
     loop {
         terminal.draw(|f| match &state.view {
@@ -164,8 +172,10 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         }
 
         // Drain IPC messages into state
-        while let Ok(msg) = evt_rx.try_recv() {
-            apply_ipc_msg(&mut state, msg);
+        if let Some(ref rx) = evt_rx {
+            while let Ok(msg) = rx.try_recv() {
+                apply_ipc_msg(&mut state, msg);
+            }
         }
     }
 
@@ -292,5 +302,33 @@ mod tests {
         // Same file touched by two different worlds → conflict
         assert_eq!(state.conflicts.len(), 1);
         assert_eq!(state.conflicts[0].file, "src/auth.rs");
+    }
+
+    #[test]
+    fn apply_ipc_msg_state_snapshot_clamps_selected_world() {
+        use crate::types::{IpcMessage, World};
+        use std::path::PathBuf;
+
+        let make_world = |id: &str| World {
+            id: id.into(),
+            branch: "main".into(),
+            path: PathBuf::from("/tmp"),
+            managed: true,
+            created_at: chrono::Utc::now(),
+        };
+
+        let mut state = AppState {
+            worlds: vec![make_world("a"), make_world("b"), make_world("c")],
+            selected_world: 2,
+            ..Default::default()
+        };
+        // Snapshot shrinks world list to 1 entry
+        apply_ipc_msg(&mut state, IpcMessage::StateSnapshot {
+            worlds: vec![make_world("a")],
+            agents: vec![],
+            conflicts: vec![],
+        });
+        assert_eq!(state.worlds.len(), 1);
+        assert_eq!(state.selected_world, 0, "should clamp to last valid index");
     }
 }
