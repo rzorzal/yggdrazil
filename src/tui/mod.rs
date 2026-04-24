@@ -1,7 +1,8 @@
 pub mod dashboard;
 pub mod world_detail;
 
-use crate::types::{Agent, AuditEvent, Conflict, World};
+use crate::ipc::client::IpcClient;
+use crate::types::{Agent, AuditEvent, Conflict, IpcMessage, World};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -9,7 +10,10 @@ use crossterm::ExecutableCommand;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::stdout;
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Duration;
+
+const AUDIT_CAP: usize = 500;
 
 #[derive(Default)]
 pub struct AppState {
@@ -30,6 +34,28 @@ pub enum View {
     WorldDetail(String),
 }
 
+fn spawn_ipc_listener(repo_root: std::path::PathBuf, tx: mpsc::Sender<crate::types::AuditEvent>) {
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Runtime::new() else { return };
+        rt.block_on(async move {
+            let sock = crate::ipc::socket_path(&repo_root);
+            let Ok(mut client) = IpcClient::connect(&sock).await else { return };
+            let _ = client.send(&IpcMessage::Subscribe).await;
+            loop {
+                match client.recv().await {
+                    Ok(IpcMessage::EventNotification { event }) => {
+                        if tx.send(event).is_err() {
+                            break; // TUI exited, receiver dropped
+                        }
+                    }
+                    Err(_) => break, // daemon disconnected or EOF; no reconnect on daemon restart
+                    _ => {}
+                }
+            }
+        });
+    });
+}
+
 pub fn run_tui(repo_root: &Path) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -46,6 +72,9 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         state.audit_log = audit_log.read_recent(100, 24)?;
         state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
     }
+
+    let (ipc_tx, ipc_rx) = mpsc::channel::<crate::types::AuditEvent>();
+    spawn_ipc_listener(repo_root.to_path_buf(), ipc_tx);
 
     loop {
         terminal.draw(|f| match &state.view {
@@ -85,6 +114,19 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
                 }
             }
         }
+
+        // Drain IPC events into state
+        let mut got_new = false;
+        while let Ok(event) = ipc_rx.try_recv() {
+            state.audit_log.push(event);
+            got_new = true;
+        }
+        if state.audit_log.len() > AUDIT_CAP {
+            state.audit_log.drain(..state.audit_log.len() - AUDIT_CAP);
+        }
+        if got_new {
+            state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
+        }
     }
 
     disable_raw_mode()?;
@@ -95,7 +137,6 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Agent, Conflict, World};
 
     #[test]
     fn app_state_default_is_empty() {
@@ -104,5 +145,49 @@ mod tests {
         assert!(state.agents.is_empty());
         assert!(state.conflicts.is_empty());
         assert_eq!(state.selected_world, 0);
+    }
+
+    #[test]
+    fn ipc_events_appended_to_audit_log() {
+        use crate::types::{AuditEvent, EventKind};
+        use std::sync::mpsc;
+
+        let (tx, rx) = mpsc::channel::<AuditEvent>();
+
+        let event1 = AuditEvent {
+            ts: chrono::Utc::now(),
+            event: EventKind::FileModified,
+            world: "feat-auth".into(),
+            agent: None, pid: None,
+            file: Some("src/auth.rs".into()),
+            files: None, worlds: None,
+        };
+        let event2 = AuditEvent {
+            ts: chrono::Utc::now(),
+            event: EventKind::FileModified,
+            world: "feat-api".into(),
+            agent: None, pid: None,
+            file: Some("src/auth.rs".into()),
+            files: None, worlds: None,
+        };
+
+        tx.send(event1).unwrap();
+        tx.send(event2).unwrap();
+        drop(tx);
+
+        let mut state = AppState::default();
+        let mut got_new = false;
+        while let Ok(event) = rx.try_recv() {
+            state.audit_log.push(event);
+            got_new = true;
+        }
+        if got_new {
+            state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
+        }
+
+        assert_eq!(state.audit_log.len(), 2);
+        // Same file touched by two different worlds → conflict
+        assert_eq!(state.conflicts.len(), 1);
+        assert_eq!(state.conflicts[0].file, "src/auth.rs");
     }
 }
