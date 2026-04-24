@@ -60,7 +60,7 @@ impl IpcServer {
                                 Err(_) => continue,
                             }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue, // slow client: drop missed events, keep forwarding
                         Err(_) => break,
                     }
                 }
@@ -95,7 +95,6 @@ mod tests {
     #[tokio::test]
     async fn server_pushes_broadcast_to_connected_client() {
         use crate::types::{AuditEvent, EventKind, IpcMessage};
-        use tokio::io::AsyncWriteExt;
 
         let dir = tempdir().unwrap();
         let sock = crate::ipc::socket_path(dir.path());
