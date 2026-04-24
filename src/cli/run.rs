@@ -104,7 +104,27 @@ pub fn run(
         .current_dir(&world.path)
         .status()?;
 
-    std::process::exit(status.code().unwrap_or(0));
+    let exit_code = status.code().unwrap_or(0);
+
+    // 6. Clean up world
+    println!("\n✓ Agent exited (code {exit_code}). Cleaning up world `{world_id}`...");
+    if let Err(e) = trunk::delete_world(repo_root, &world_id) {
+        eprintln!("⚠  Could not fully clean up world `{world_id}`: {e}");
+    } else {
+        println!("✓ World `{world_id}` removed.");
+    }
+
+    // 7. Offer to launch another world with the same agent
+    let restart = Confirm::new()
+        .with_prompt("Launch a new world with the same agent?")
+        .default(false)
+        .interact()?;
+
+    if restart {
+        run(repo_root, agent, agent_args, extra_rules)
+    } else {
+        std::process::exit(exit_code);
+    }
 }
 
 #[cfg(test)]
