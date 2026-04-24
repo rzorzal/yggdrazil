@@ -1,8 +1,8 @@
 use crate::tui::AppState;
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
 
@@ -134,9 +134,44 @@ pub fn render(f: &mut Frame, state: &AppState) {
     );
     f.render_widget(log_list, chunks[2]);
 
-    // Status bar
-    let help = Paragraph::new("[q]uit  [s]ync  [r]un new agent  [d]elete world  [↑↓]select  [Enter]detail");
+    // Status bar — show transient message or default help
+    let help_text = if let Some(ref msg) = state.status_msg {
+        format!("  {}", msg)
+    } else {
+        "[q]uit  [d]elete world  [↑↓]select  [Enter]detail  [j/k]scroll log".into()
+    };
+    let help = Paragraph::new(help_text);
     f.render_widget(help, chunks[3]);
+
+    // Confirmation overlay — rendered last so it appears on top
+    if let Some(ref world_id) = state.confirm_delete {
+        let popup_area = centered_rect(52, 4, size);
+        f.render_widget(Clear, popup_area);
+        let text = format!("Delete \"{}\" + kill agent?\n\n[y] confirm        [n] cancel", world_id);
+        let popup = Paragraph::new(text)
+            .block(Block::default().title(" Confirm Delete ").borders(Borders::ALL))
+            .alignment(Alignment::Center);
+        f.render_widget(popup, popup_area);
+    }
+}
+
+pub fn centered_rect(percent_x: u16, height: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(r.height.saturating_sub(height) / 2),
+            Constraint::Length(height),
+            Constraint::Min(0),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 #[cfg(test)]
@@ -163,5 +198,17 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].contains("feat-auth"));
         assert!(rows[0].contains("feat/auth"));
+    }
+
+    #[test]
+    fn centered_rect_is_inside_parent() {
+        use ratatui::layout::Rect;
+        let area = Rect::new(0, 0, 80, 24);
+        let popup = centered_rect(50, 4, area);
+        assert!(popup.x >= area.x);
+        assert!(popup.y >= area.y);
+        assert!(popup.x + popup.width <= area.x + area.width);
+        assert!(popup.y + popup.height <= area.y + area.height);
+        assert_eq!(popup.height, 4);
     }
 }
