@@ -104,6 +104,10 @@ impl Daemon {
                             unsafe {
                                 libc::kill(agent.pid as libc::pid_t, libc::SIGTERM);
                             }
+                            // Wait briefly for the agent to release file locks before removing the worktree.
+                            // SIGTERM is asynchronous; without this gap, git worktree remove can race with
+                            // in-flight writes from the agent.
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         }
 
                         // Remove the worktree
@@ -123,7 +127,7 @@ impl Daemon {
                                     });
                                 }
                                 let _ = tx.send(crate::types::IpcMessage::WorldDeleted {
-                                    world_id: world_id.clone(),
+                                    world_id,
                                 });
                             }
                             Err(e) => {
