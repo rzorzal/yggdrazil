@@ -114,10 +114,14 @@ pub fn run_tui(repo_root: &Path) -> Result<()> {
         }
 
         // Drain IPC events into state
+        const AUDIT_CAP: usize = 500;
         let mut got_new = false;
         while let Ok(event) = ipc_rx.try_recv() {
             state.audit_log.push(event);
             got_new = true;
+        }
+        if state.audit_log.len() > AUDIT_CAP {
+            state.audit_log.drain(..state.audit_log.len() - AUDIT_CAP);
         }
         if got_new {
             state.conflicts = crate::daemon::bus::detect_conflicts(&state.audit_log);
