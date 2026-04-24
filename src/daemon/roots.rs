@@ -58,20 +58,21 @@ pub fn world_id_for_unmanaged_cwd(_repo_root: &std::path::Path, cwd: &std::path:
 
 const POLL_INTERVAL_SECS: u64 = 30;
 
-pub async fn scan_loop(repo_root: &std::path::Path) {
+pub async fn scan_loop(
+    repo_root: &std::path::Path,
+    tx: tokio::sync::broadcast::Sender<crate::types::IpcMessage>,
+) {
     let worlds_dir = repo_root.join(".ygg").join("worlds");
     let worlds_dir_str = worlds_dir.to_string_lossy().to_string();
     let repo_str = repo_root.to_string_lossy().to_string();
     let mut known_pids: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     loop {
-        // Get current PIDs from OS (for exit detection)
         let mut sys = System::new_all();
         sys.refresh_processes();
         let current_pids: std::collections::HashSet<u32> =
             sys.processes().keys().map(|p| p.as_u32()).collect();
 
-        // Use scan_once to get all repo agents (managed + unmanaged)
         for agent in scan_once(&repo_str, &worlds_dir_str) {
             let pid = agent.pid;
             if known_pids.contains(&pid) {
@@ -80,7 +81,6 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
             known_pids.insert(pid);
 
             if agent.world_id.is_empty() {
-                // Unmanaged agent
                 let cwd = sys.processes().values()
                     .find(|p| p.pid().as_u32() == pid)
                     .and_then(|p| p.cwd())
@@ -91,7 +91,6 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
                     "unmanaged agent detected: {} PID {}, creating world {}",
                     agent.binary, pid, world_id
                 );
-                // Resolve HEAD to actual branch name
                 let branch = {
                     std::process::Command::new("git")
                         .args(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -113,7 +112,6 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
             }
         }
 
-        // Detect exited agents
         known_pids.retain(|pid| {
             if current_pids.contains(pid) {
                 true
@@ -122,6 +120,22 @@ pub async fn scan_loop(repo_root: &std::path::Path) {
                 false
             }
         });
+
+        // Broadcast current state to all TUI subscribers
+        let worlds = trunk::list_worlds(repo_root).unwrap_or_default();
+        let agents = scan_once(&repo_str, &worlds_dir_str);
+        let conflicts = {
+            let log_path = repo_root.join(".ygg").join("shared_memory.json");
+            if log_path.exists() {
+                super::bus::AuditLog::open(&log_path)
+                    .and_then(|l| l.read_recent(500, 2))
+                    .map(|events| super::bus::detect_conflicts(&events))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        };
+        let _ = tx.send(crate::types::IpcMessage::StateSnapshot { worlds, agents, conflicts });
 
         tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
     }
@@ -156,5 +170,38 @@ mod tests {
         let id2 = world_id_for_unmanaged_cwd(Path::new("/repo"), Path::new("/repo/subdir"));
         assert!(id1.starts_with("unmanaged-"), "got: {id1}");
         assert_eq!(id1, id2, "same CWD must produce same world id");
+    }
+
+    #[tokio::test]
+    async fn scan_loop_broadcasts_state_snapshot() {
+        use tokio::sync::broadcast;
+        use crate::types::IpcMessage;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".ygg/worlds")).unwrap();
+        std::fs::write(dir.path().join(".ygg/shared_memory.json"), "").unwrap();
+
+        let (tx, mut rx) = broadcast::channel::<IpcMessage>(16);
+        let root = dir.path().to_path_buf();
+        let handle = tokio::spawn(async move {
+            scan_loop(&root, tx).await;
+        });
+
+        // Wait up to 2s for at least one StateSnapshot
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(IpcMessage::StateSnapshot { .. }) => return true,
+                        Ok(_) => continue,
+                        Err(_) => return false,
+                    }
+                }
+            },
+        ).await;
+
+        handle.abort();
+        // snapshot arrives within the first cycle
+        assert!(result.is_ok(), "timeout waiting for StateSnapshot");
     }
 }

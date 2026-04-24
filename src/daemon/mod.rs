@@ -21,8 +21,9 @@ impl Daemon {
         tracing::info!("ygg daemon started, socket: {}", sock.display());
 
         let roots_root = repo_root.clone();
+        let scan_tx = server.tx.clone();
         tokio::spawn(async move {
-            roots::scan_loop(&roots_root).await;
+            roots::scan_loop(&roots_root, scan_tx).await;
         });
 
         let log_path2 = log_path.clone();
