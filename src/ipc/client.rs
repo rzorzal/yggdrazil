@@ -32,7 +32,10 @@ impl IpcClient {
 
     pub async fn recv(&mut self) -> Result<IpcMessage> {
         let mut line = String::new();
-        self.reader.read_line(&mut line).await?;
+        let n = self.reader.read_line(&mut line).await?;
+        if n == 0 {
+            anyhow::bail!("IPC connection closed (EOF)");
+        }
         let msg = serde_json::from_str(line.trim())?;
         Ok(msg)
     }
@@ -120,7 +123,7 @@ mod tests {
             client.recv(),
         ).await.unwrap().unwrap();
 
-        assert!(matches!(msg1, IpcMessage::EventNotification { .. }));
-        assert!(matches!(msg2, IpcMessage::EventNotification { .. }));
+        assert!(matches!(&msg1, IpcMessage::EventNotification { event } if event.file.as_deref() == Some("a.rs")));
+        assert!(matches!(&msg2, IpcMessage::EventNotification { event } if event.file.as_deref() == Some("b.rs")));
     }
 }
