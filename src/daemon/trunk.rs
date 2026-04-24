@@ -151,25 +151,30 @@ fn read_branch_from_worktree(worktree_path: &Path) -> Option<String> {
 }
 
 pub fn delete_world(repo_root: &Path, world_id: &str) -> Result<()> {
-    // Remove worktree via git CLI
+    let world_path = repo_root.join(".ygg").join("worlds").join(world_id);
+
     let output = std::process::Command::new("git")
-        .args(["worktree", "remove", "--force", world_id])
+        .args(["worktree", "remove", "--force", world_path.to_str().unwrap()])
         .current_dir(repo_root)
         .output()
         .context("git worktree remove failed")?;
 
     if !output.status.success() {
-        // Fallback: prune and remove directory manually
         let _ = std::process::Command::new("git")
             .args(["worktree", "prune"])
             .current_dir(repo_root)
             .output();
 
-        let world_path = repo_root.join(".ygg").join("worlds").join(world_id);
         if world_path.exists() {
             std::fs::remove_dir_all(&world_path)?;
         }
     }
+
+    // Best-effort: delete the branch named world_id (may not exist if it's main/other)
+    let _ = std::process::Command::new("git")
+        .args(["branch", "-D", world_id])
+        .current_dir(repo_root)
+        .output();
 
     Ok(())
 }
