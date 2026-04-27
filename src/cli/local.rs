@@ -26,6 +26,7 @@ pub struct LocalModel {
 pub struct LocalSetup {
     pub model: LocalModel,
     pub server_port: u16,
+    pub ctx_size: u32,
     pub env_vars: Vec<(String, String)>,
     pub server_bin: Option<PathBuf>,
 }
@@ -421,7 +422,7 @@ pub fn agent_env_vars(agent: &str, server_port: u16, model_name: &str) -> Vec<(S
     }
 }
 
-pub fn setup(agent: &str) -> Result<LocalSetup> {
+pub fn setup(agent: &str, ctx_size: u32) -> Result<LocalSetup> {
     let ram_gb = available_ram_gb();
 
     let model = ensure_model(ram_gb)?;
@@ -433,6 +434,7 @@ pub fn setup(agent: &str) -> Result<LocalSetup> {
     Ok(LocalSetup {
         model,
         server_port,
+        ctx_size,
         env_vars,
         server_bin,
     })
@@ -458,6 +460,7 @@ pub fn start_server(
     server_bin: &Path,
     model: &LocalModel,
     port: u16,
+    ctx_size: u32,
 ) -> Result<std::process::Child> {
     let child = std::process::Command::new(server_bin)
         .args([
@@ -466,7 +469,7 @@ pub fn start_server(
             "--port",
             &port.to_string(),
             "--ctx-size",
-            "4096",
+            &ctx_size.to_string(),
             "-ngl",
             "99",
         ])

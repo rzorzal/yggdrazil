@@ -27,6 +27,9 @@ enum Commands {
         /// Run agent against a local llama.cpp model instead of a remote API
         #[arg(long)]
         local: bool,
+        /// llama-server context window size (tokens). Increase if you hit context errors.
+        #[arg(long, default_value = "32768")]
+        ctx_size: u32,
         agent: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -95,7 +98,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { rules } => cli::init::run(&root, rules.as_deref()),
-        Commands::Run { local, agent, args } => cli::run::run(&root, &agent, &args, None, local),
+        Commands::Run { local, ctx_size, agent, args } => cli::run::run(&root, &agent, &args, None, local, ctx_size),
         Commands::Hook { world, files } => {
             validate_world_id(&world)?;
             cli::hook::run(&root, &world, &files)

@@ -50,6 +50,7 @@ pub fn run(
     agent_args: &[String],
     extra_rules: Option<&Path>,
     use_local: bool,
+    ctx_size: u32,
 ) -> Result<()> {
     // 1. Prompt for branch
     let branches = list_local_branches(repo_root);
@@ -91,7 +92,7 @@ pub fn run(
 
     // 3. Resolve local model setup (before world creation so errors surface early)
     let local_setup = if use_local {
-        Some(local::setup(agent)?)
+        Some(local::setup(agent, ctx_size)?)
     } else {
         None
     };
@@ -113,7 +114,7 @@ pub fn run(
                 "  Starting llama-server on port {} with model: {}",
                 setup.server_port, setup.model.name
             );
-            match local::start_server(bin, &setup.model, setup.server_port) {
+            match local::start_server(bin, &setup.model, setup.server_port, setup.ctx_size) {
                 Ok(child) => {
                     println!("  llama-server ready.");
                     llama_proc = Some(child);
@@ -168,7 +169,7 @@ pub fn run(
         .interact()?;
 
     if restart {
-        run(repo_root, agent, agent_args, extra_rules, use_local)
+        run(repo_root, agent, agent_args, extra_rules, use_local, ctx_size)
     } else {
         std::process::exit(exit_code);
     }
