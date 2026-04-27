@@ -100,7 +100,12 @@ pub fn run(
     // 4. Create world
     let world_id = world_id_for(agent, &branch);
     let local_model_name = local_setup.as_ref().map(|s| s.model.name.clone());
-    let world = trunk::create_world(repo_root, &world_id, &branch, local_model_name.as_deref())?;
+    let local_gpu_name = local_setup.as_ref().and_then(|s| s.gpu.clone());
+    let world = trunk::create_world(
+        repo_root, &world_id, &branch,
+        local_model_name.as_deref(),
+        local_gpu_name.as_deref(),
+    )?;
 
     // 5. Inject rules
     let extra = extra_rules.map(|p| vec![p]).unwrap_or_default();
@@ -114,7 +119,7 @@ pub fn run(
                 "  Starting llama-server on port {} with model: {}",
                 setup.server_port, setup.model.name
             );
-            match local::start_server(bin, &setup.model, setup.server_port, setup.ctx_size) {
+            match local::start_server(bin, &setup.model, setup.server_port, setup.ctx_size, setup.gpu.is_some()) {
                 Ok(child) => {
                     println!("  llama-server ready.");
                     llama_proc = Some(child);
@@ -128,7 +133,8 @@ pub fn run(
             eprintln!("⚠  llama-server unavailable. Env vars set but no local server started.");
         }
 
-        println!("🏠 LOCAL mode: {} @ port {}", setup.model.name, setup.server_port);
+        let gpu_label = setup.gpu.as_deref().unwrap_or("CPU only");
+        println!("🏠 LOCAL mode: {} @ port {}  [{}]", setup.model.name, setup.server_port, gpu_label);
         println!("   Env vars injected:");
         for (k, v) in &setup.env_vars {
             println!("     {k}={v}");

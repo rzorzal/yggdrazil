@@ -8,6 +8,7 @@ pub fn create_world(
     world_id: &str,
     branch: &str,
     local_model: Option<&str>,
+    local_gpu: Option<&str>,
 ) -> Result<World> {
     let world_path = repo_root.join(".ygg").join("worlds").join(world_id);
 
@@ -42,6 +43,9 @@ pub fn create_world(
     if let Some(model) = local_model {
         env_content.push_str(&format!("LOCAL_MODEL={model}\n"));
     }
+    if let Some(gpu) = local_gpu {
+        env_content.push_str(&format!("LOCAL_GPU={gpu}\n"));
+    }
     std::fs::write(world_path.join(".env"), env_content)?;
 
     Ok(World {
@@ -51,6 +55,7 @@ pub fn create_world(
         managed: true,
         created_at: Utc::now(),
         local_model: local_model.map(|s| s.to_string()),
+        local_gpu: local_gpu.map(|s| s.to_string()),
     })
 }
 
@@ -136,6 +141,7 @@ pub fn list_worlds(repo_root: &Path) -> Result<Vec<World>> {
 
         let branch = read_branch_from_worktree(&path).unwrap_or_else(|| "unknown".to_string());
         let local_model = read_local_model_from_env(&path);
+        let local_gpu = read_env_var(&path, "LOCAL_GPU");
 
         worlds.push(World {
             id,
@@ -144,17 +150,23 @@ pub fn list_worlds(repo_root: &Path) -> Result<Vec<World>> {
             managed: true,
             created_at: Utc::now(),
             local_model,
+            local_gpu,
         });
     }
     Ok(worlds)
 }
 
-fn read_local_model_from_env(worktree_path: &Path) -> Option<String> {
+fn read_env_var(worktree_path: &Path, key: &str) -> Option<String> {
     let content = std::fs::read_to_string(worktree_path.join(".env")).ok()?;
+    let prefix = format!("{key}=");
     content
         .lines()
-        .find_map(|l| l.strip_prefix("LOCAL_MODEL=").map(|v| v.trim().to_string()))
+        .find_map(|l| l.strip_prefix(&prefix).map(|v| v.trim().to_string()))
         .filter(|s| !s.is_empty())
+}
+
+fn read_local_model_from_env(worktree_path: &Path) -> Option<String> {
+    read_env_var(worktree_path, "LOCAL_MODEL")
 }
 
 fn read_branch_from_worktree(worktree_path: &Path) -> Option<String> {

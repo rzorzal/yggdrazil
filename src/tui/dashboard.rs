@@ -48,11 +48,11 @@ pub fn render(f: &mut Frame, state: &AppState) {
         .map(|(i, w)| {
             let status = if state.agents.iter().any(|a| a.world_id == w.id) { "●" } else { "○" };
             let flag = if !w.managed { " ⚠" } else { "" };
-            let local_tag = w
-                .local_model
-                .as_deref()
-                .map(|m| format!(" 🏠{m}"))
-                .unwrap_or_default();
+            let local_tag = match (&w.local_model, &w.local_gpu) {
+                (Some(m), Some(g)) => format!(" 🏠{m} [{}]", g.split(' ').next().unwrap_or(g)),
+                (Some(m), None)    => format!(" 🏠{m} [CPU]"),
+                _                  => String::new(),
+            };
             let files = state.agent_states.get(&w.id).cloned().unwrap_or_default();
             let file_hint = if files.is_empty() {
                 String::new()
@@ -84,10 +84,15 @@ pub fn render(f: &mut Frame, state: &AppState) {
             let file = a.active_files.first().map(|s| s.as_str()).unwrap_or("-");
             let world = state.worlds.iter().find(|w| w.id == a.world_id);
             let branch = world.map(|w| w.branch.as_str()).unwrap_or("-");
-            let model = world
-                .and_then(|w| w.local_model.as_deref())
-                .map(|m| format!("🏠{m}"))
-                .unwrap_or_else(|| "remote".to_string());
+            let model = match world {
+                Some(w) if w.local_model.is_some() => {
+                    let gpu = w.local_gpu.as_deref()
+                        .and_then(|g| g.split(' ').next())
+                        .unwrap_or("CPU");
+                    format!("🏠{} [{gpu}]", w.local_model.as_deref().unwrap_or(""))
+                }
+                _ => "remote".to_string(),
+            };
             Row::new(vec![
                 a.pid.to_string(),
                 a.binary.clone(),
@@ -207,7 +212,7 @@ mod tests {
                 path: PathBuf::from("/tmp"),
                 managed: true,
                 created_at: Utc::now(),
-                local_model: None,
+                local_model: None, local_gpu: None,
             }],
             ..Default::default()
         };

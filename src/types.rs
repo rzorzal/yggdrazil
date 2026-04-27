@@ -11,6 +11,8 @@ pub struct World {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub local_model: Option<String>,
+    #[serde(default)]
+    pub local_gpu: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
