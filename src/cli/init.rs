@@ -1,14 +1,32 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-const YGG_STOP_HOOK: &str = "\
-#!/usr/bin/env bash
-# Yggdrazil stop hook — signals session end when running inside a managed world.
-# Fires on every Claude Code session stop; guard ensures it only acts in ygg worlds.
-grep -q 'YGGDRAZIL PROTOCOL' CLAUDE.md 2>/dev/null \\
-    && ygg hook --world \"$(basename \"$PWD\")\" 2>/dev/null
-exit 0
-";
+fn ygg_stop_hook(ygg_bin: &str) -> String {
+    format!(
+        "#!/usr/bin/env bash\n\
+         # Yggdrazil stop hook — signals session end when running inside a managed world.\n\
+         grep -q 'YGGDRAZIL PROTOCOL' CLAUDE.md 2>/dev/null \\\n\
+         \t&& \"{ygg_bin}\" hook --world \"$(basename \"$PWD\")\" 2>/dev/null\n\
+         exit 0\n"
+    )
+}
+
+fn ygg_post_tool_hook(ygg_bin: &str) -> String {
+    format!(
+        "#!/usr/bin/env bash\n\
+         # Yggdrazil PostToolUse hook — only fires inside managed worlds.\n\
+         grep -q 'YGGDRAZIL PROTOCOL' CLAUDE.md 2>/dev/null || exit 0\n\
+         world_id=$(grep -o 'World: `[^`]*`' CLAUDE.md 2>/dev/null | sed 's/World: `//;s/`//')\n\
+         file=$(python3 -c \"\
+         import sys,json; \
+         d=json.load(sys.stdin); \
+         print(d.get('tool_input',{{}}).get('file_path',''))\
+         \" 2>/dev/null)\n\
+         [ -n \"$file\" ] && [ -n \"$world_id\" ] \
+         && \"{ygg_bin}\" hook --world \"$world_id\" --files \"$file\" 2>/dev/null\n\
+         exit 0\n"
+    )
+}
 
 const YGG_GOVERNANCE_RULES: &str = "\
 # Yggdrazil Governance Rules
@@ -66,6 +84,12 @@ pub fn run(repo_root: &Path, _rules: Option<&Path>) -> Result<()> {
         std::fs::write(&gitignore, format!("{current}{entry}"))?;
     }
 
+    let ygg_bin = std::env::current_exe()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "ygg".to_string());
+
     // .claude/ governance files
     let claude_dir = repo_root.join(".claude");
     let hooks_dir = claude_dir.join("hooks");
@@ -73,15 +97,26 @@ pub fn run(repo_root: &Path, _rules: Option<&Path>) -> Result<()> {
     std::fs::create_dir_all(&hooks_dir).context("failed to create .claude/hooks")?;
     std::fs::create_dir_all(&rules_dir).context("failed to create .claude/rules")?;
 
-    // Stop hook script
     let stop_script = hooks_dir.join("ygg-stop.sh");
+    let post_tool_script = hooks_dir.join("ygg-post-tool.sh");
+
     if !stop_script.exists() {
-        std::fs::write(&stop_script, YGG_STOP_HOOK)
+        std::fs::write(&stop_script, ygg_stop_hook(&ygg_bin))
             .context("failed to create .claude/hooks/ygg-stop.sh")?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&stop_script, std::fs::Permissions::from_mode(0o755))?;
+        }
+    }
+
+    if !post_tool_script.exists() {
+        std::fs::write(&post_tool_script, ygg_post_tool_hook(&ygg_bin))
+            .context("failed to create .claude/hooks/ygg-post-tool.sh")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&post_tool_script, std::fs::Permissions::from_mode(0o755))?;
         }
     }
 
@@ -92,15 +127,24 @@ pub fn run(repo_root: &Path, _rules: Option<&Path>) -> Result<()> {
             .context("failed to create .claude/rules/ygg-governance.md")?;
     }
 
-    // settings.json — references the stop hook script
+    // settings.json — absolute paths so hooks fire regardless of CWD
+    let stop_abs = stop_script.display().to_string();
+    let post_tool_abs = post_tool_script.display().to_string();
     let settings_path = claude_dir.join("settings.json");
     if !settings_path.exists() {
         let settings = serde_json::json!({
             "hooks": {
+                "PostToolUse": [{
+                    "matcher": "Write|Edit|MultiEdit",
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("bash \"{post_tool_abs}\"")
+                    }]
+                }],
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": "bash .claude/hooks/ygg-stop.sh"
+                        "command": format!("bash \"{stop_abs}\"")
                     }]
                 }]
             }

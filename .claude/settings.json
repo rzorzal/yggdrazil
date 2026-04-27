@@ -1,10 +1,21 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "bash \"/Users/ricardo/Repos/cer/yggdrazil/.claude/hooks/ygg-post-tool.sh\"",
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit|MultiEdit"
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
-            "command": "bash .claude/hooks/ygg-stop.sh",
+            "command": "bash \"/Users/ricardo/Repos/cer/yggdrazil/.claude/hooks/ygg-stop.sh\"",
             "type": "command"
           }
         ]
