@@ -108,28 +108,23 @@ pub fn run(
     // 6. Start llama-server if local mode
     let mut llama_proc: Option<std::process::Child> = None;
     if let Some(ref setup) = local_setup {
-        match local::find_llama_server() {
-            Some(bin) => {
-                println!(
-                    "  Starting llama-server on port {} with model: {}",
-                    setup.server_port, setup.model.name
-                );
-                match local::start_server(&bin, &setup.model, setup.server_port) {
-                    Ok(child) => {
-                        println!("  llama-server ready.");
-                        llama_proc = Some(child);
-                    }
-                    Err(e) => {
-                        eprintln!("⚠  llama-server failed to start: {e}");
-                        eprintln!("   Continuing without local server — set env vars manually.");
-                    }
+        if let Some(ref bin) = setup.server_bin {
+            println!(
+                "  Starting llama-server on port {} with model: {}",
+                setup.server_port, setup.model.name
+            );
+            match local::start_server(bin, &setup.model, setup.server_port) {
+                Ok(child) => {
+                    println!("  llama-server ready.");
+                    llama_proc = Some(child);
+                }
+                Err(e) => {
+                    eprintln!("⚠  llama-server failed to start: {e}");
+                    eprintln!("   Env vars still set — point them to a running server manually.");
                 }
             }
-            None => {
-                eprintln!("⚠  llama-server not found in PATH.");
-                eprintln!("   Install llama.cpp and ensure `llama-server` is on your PATH.");
-                eprintln!("   Env vars will still be set so a running server can be used.");
-            }
+        } else {
+            eprintln!("⚠  llama-server unavailable. Env vars set but no local server started.");
         }
 
         println!("🏠 LOCAL mode: {} @ port {}", setup.model.name, setup.server_port);
