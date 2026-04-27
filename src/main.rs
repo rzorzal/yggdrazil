@@ -24,6 +24,9 @@ enum Commands {
     },
     /// Launch agent in a managed world
     Run {
+        /// Run agent against a local llama.cpp model instead of a remote API
+        #[arg(long)]
+        local: bool,
         agent: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -92,7 +95,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { rules } => cli::init::run(&root, rules.as_deref()),
-        Commands::Run { agent, args } => cli::run::run(&root, &agent, &args, None),
+        Commands::Run { local, agent, args } => cli::run::run(&root, &agent, &args, None, local),
         Commands::Hook { world, files } => {
             validate_world_id(&world)?;
             cli::hook::run(&root, &world, &files)

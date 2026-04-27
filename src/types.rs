@@ -9,6 +9,8 @@ pub struct World {
     pub path: PathBuf,
     pub managed: bool,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub local_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

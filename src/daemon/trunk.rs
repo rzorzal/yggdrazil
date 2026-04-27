@@ -3,7 +3,12 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 
-pub fn create_world(repo_root: &Path, world_id: &str, branch: &str) -> Result<World> {
+pub fn create_world(
+    repo_root: &Path,
+    world_id: &str,
+    branch: &str,
+    local_model: Option<&str>,
+) -> Result<World> {
     let world_path = repo_root.join(".ygg").join("worlds").join(world_id);
 
     // Use git CLI instead of git2 for worktree operations (more reliable cross-platform).
@@ -30,10 +35,14 @@ pub fn create_world(repo_root: &Path, world_id: &str, branch: &str) -> Result<Wo
     }
 
     // TODO: port assignment is racy under concurrent ygg run; use a lockfile
-    // Write .env with port offset
+    // Write .env with port offset and optional local model
     let existing_worlds = list_worlds(repo_root).unwrap_or_default();
     let port = 3000u16 + existing_worlds.len() as u16;
-    std::fs::write(world_path.join(".env"), format!("PORT={port}\n"))?;
+    let mut env_content = format!("PORT={port}\n");
+    if let Some(model) = local_model {
+        env_content.push_str(&format!("LOCAL_MODEL={model}\n"));
+    }
+    std::fs::write(world_path.join(".env"), env_content)?;
 
     Ok(World {
         id: world_id.to_string(),
@@ -41,6 +50,7 @@ pub fn create_world(repo_root: &Path, world_id: &str, branch: &str) -> Result<Wo
         path: world_path,
         managed: true,
         created_at: Utc::now(),
+        local_model: local_model.map(|s| s.to_string()),
     })
 }
 
@@ -124,8 +134,8 @@ pub fn list_worlds(repo_root: &Path) -> Result<Vec<World>> {
         let id = entry.file_name().to_string_lossy().to_string();
         let path = entry.path();
 
-        // Read branch from .git file (git worktrees have a `.git` file pointing to the gitdir)
         let branch = read_branch_from_worktree(&path).unwrap_or_else(|| "unknown".to_string());
+        let local_model = read_local_model_from_env(&path);
 
         worlds.push(World {
             id,
@@ -133,9 +143,18 @@ pub fn list_worlds(repo_root: &Path) -> Result<Vec<World>> {
             path,
             managed: true,
             created_at: Utc::now(),
+            local_model,
         });
     }
     Ok(worlds)
+}
+
+fn read_local_model_from_env(worktree_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(worktree_path.join(".env")).ok()?;
+    content
+        .lines()
+        .find_map(|l| l.strip_prefix("LOCAL_MODEL=").map(|v| v.trim().to_string()))
+        .filter(|s| !s.is_empty())
 }
 
 fn read_branch_from_worktree(worktree_path: &Path) -> Option<String> {

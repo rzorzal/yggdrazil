@@ -1,3 +1,4 @@
+use crate::cli::local;
 use crate::daemon::{laws, trunk};
 use anyhow::Result;
 use dialoguer::{Confirm, Select};
@@ -48,6 +49,7 @@ pub fn run(
     agent: &str,
     agent_args: &[String],
     extra_rules: Option<&Path>,
+    use_local: bool,
 ) -> Result<()> {
     // 1. Prompt for branch
     let branches = list_local_branches(repo_root);
@@ -87,26 +89,76 @@ pub fn run(
         }
     }
 
-    // 3. Create world
-    let world_id = world_id_for(agent, &branch);
-    let world = trunk::create_world(repo_root, &world_id, &branch)?;
+    // 3. Resolve local model setup (before world creation so errors surface early)
+    let local_setup = if use_local {
+        Some(local::setup(agent)?)
+    } else {
+        None
+    };
 
-    // 4. Inject rules
+    // 4. Create world
+    let world_id = world_id_for(agent, &branch);
+    let local_model_name = local_setup.as_ref().map(|s| s.model.name.clone());
+    let world = trunk::create_world(repo_root, &world_id, &branch, local_model_name.as_deref())?;
+
+    // 5. Inject rules
     let extra = extra_rules.map(|p| vec![p]).unwrap_or_default();
     laws::inject_rules(&world.path, &world_id, &branch, &extra)?;
+
+    // 6. Start llama-server if local mode
+    let mut llama_proc: Option<std::process::Child> = None;
+    if let Some(ref setup) = local_setup {
+        match local::find_llama_server() {
+            Some(bin) => {
+                println!(
+                    "  Starting llama-server on port {} with model: {}",
+                    setup.server_port, setup.model.name
+                );
+                match local::start_server(&bin, &setup.model, setup.server_port) {
+                    Ok(child) => {
+                        println!("  llama-server ready.");
+                        llama_proc = Some(child);
+                    }
+                    Err(e) => {
+                        eprintln!("⚠  llama-server failed to start: {e}");
+                        eprintln!("   Continuing without local server — set env vars manually.");
+                    }
+                }
+            }
+            None => {
+                eprintln!("⚠  llama-server not found in PATH.");
+                eprintln!("   Install llama.cpp and ensure `llama-server` is on your PATH.");
+                eprintln!("   Env vars will still be set so a running server can be used.");
+            }
+        }
+
+        println!("🏠 LOCAL mode: {} @ port {}", setup.model.name, setup.server_port);
+        println!("   Env vars injected:");
+        for (k, v) in &setup.env_vars {
+            println!("     {k}={v}");
+        }
+    }
 
     println!("✓ World `{world_id}` created on branch `{branch}`");
     println!("  Launching: {agent} {}", agent_args.join(" "));
 
-    // 5. Spawn agent with all args, cwd = world path
-    let status = std::process::Command::new(agent)
-        .args(agent_args)
-        .current_dir(&world.path)
-        .status()?;
-
+    // 7. Spawn agent with all args, cwd = world path
+    let mut cmd = std::process::Command::new(agent);
+    cmd.args(agent_args).current_dir(&world.path);
+    if let Some(ref setup) = local_setup {
+        for (k, v) in &setup.env_vars {
+            cmd.env(k, v);
+        }
+    }
+    let status = cmd.status()?;
     let exit_code = status.code().unwrap_or(0);
 
-    // 6. Clean up world
+    // 8. Kill llama-server
+    if let Some(mut child) = llama_proc {
+        let _ = child.kill();
+    }
+
+    // 9. Clean up world
     println!("\n✓ Agent exited (code {exit_code}). Cleaning up world `{world_id}`...");
     if let Err(e) = trunk::delete_world(repo_root, &world_id) {
         eprintln!("⚠  Could not fully clean up world `{world_id}`: {e}");
@@ -114,14 +166,14 @@ pub fn run(
         println!("✓ World `{world_id}` removed.");
     }
 
-    // 7. Offer to launch another world with the same agent
+    // 10. Offer to launch another world with the same agent
     let restart = Confirm::new()
         .with_prompt("Launch a new world with the same agent?")
         .default(false)
         .interact()?;
 
     if restart {
-        run(repo_root, agent, agent_args, extra_rules)
+        run(repo_root, agent, agent_args, extra_rules, use_local)
     } else {
         std::process::exit(exit_code);
     }

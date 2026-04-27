@@ -286,6 +286,7 @@ mod tests {
             path: PathBuf::from("/tmp"),
             managed: true,
             created_at: chrono::Utc::now(),
+            local_model: None,
         };
         let mut state = AppState::default();
         apply_ipc_msg(&mut state, IpcMessage::StateSnapshot {
@@ -310,6 +311,7 @@ mod tests {
                 path: PathBuf::from("/tmp"),
                 managed: true,
                 created_at: chrono::Utc::now(),
+                local_model: None,
             }],
             confirm_delete: Some("feat-auth".into()),
             ..Default::default()
@@ -385,6 +387,7 @@ mod tests {
             path: PathBuf::from("/tmp"),
             managed: true,
             created_at: chrono::Utc::now(),
+            local_model: None,
         };
 
         let mut state = AppState {
@@ -414,6 +417,7 @@ mod tests {
                 path: PathBuf::from("/tmp"),
                 managed: true,
                 created_at: chrono::Utc::now(),
+                local_model: None,
             }],
             selected_world: 0,
             ..Default::default()

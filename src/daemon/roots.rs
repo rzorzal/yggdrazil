@@ -102,7 +102,7 @@ pub async fn scan_loop(
                         .map(|s| s.trim().to_string())
                         .unwrap_or_else(|| "HEAD".to_string())
                 };
-                if let Ok(world) = trunk::create_world(repo_root, &world_id, &branch) {
+                if let Ok(world) = trunk::create_world(repo_root, &world_id, &branch, None) {
                     let _ = laws::inject_rules(&world.path, &world_id, &branch, &[]);
                 }
             } else {

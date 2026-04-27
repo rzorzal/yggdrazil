@@ -31,7 +31,7 @@ fn creates_worktree_on_branch() {
     make_repo_with_commit(repo_dir.path());
     std::fs::create_dir_all(repo_dir.path().join(".ygg/worlds")).unwrap();
 
-    let world = create_world(repo_dir.path(), "feat-auth", "main").unwrap();
+    let world = create_world(repo_dir.path(), "feat-auth", "main", None).unwrap();
 
     assert!(world.path.exists(), "worktree dir should exist");
     assert_eq!(world.id, "feat-auth");
@@ -47,7 +47,7 @@ fn delete_world_removes_worktree_and_branch() {
     make_repo_with_commit(repo_dir.path());
     std::fs::create_dir_all(repo_dir.path().join(".ygg/worlds")).unwrap();
 
-    let world = create_world(repo_dir.path(), "feat-del", "main").unwrap();
+    let world = create_world(repo_dir.path(), "feat-del", "main", None).unwrap();
     assert!(world.path.exists(), "worktree should exist before delete");
 
     delete_world(repo_dir.path(), "feat-del").unwrap();
