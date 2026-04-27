@@ -113,7 +113,10 @@ pub fn inject_rules(
         }
     }
 
-    // settings.json referencing the hook scripts
+    // settings.json referencing the hook scripts — use absolute paths so hooks
+    // work regardless of CWD when Claude Code fires them
+    let post_tool_abs = post_tool_script.display().to_string();
+    let stop_abs = stop_script.display().to_string();
     let settings_path = claude_dir.join("settings.json");
     if !settings_path.exists() {
         let settings = serde_json::json!({
@@ -122,13 +125,13 @@ pub fn inject_rules(
                     "matcher": "Write|Edit|MultiEdit",
                     "hooks": [{
                         "type": "command",
-                        "command": "bash .claude/hooks/ygg-post-tool.sh"
+                        "command": format!("bash \"{post_tool_abs}\"")
                     }]
                 }],
                 "Stop": [{
                     "hooks": [{
                         "type": "command",
-                        "command": format!("bash .claude/hooks/ygg-stop.sh")
+                        "command": format!("bash \"{stop_abs}\"")
                     }]
                 }]
             }
