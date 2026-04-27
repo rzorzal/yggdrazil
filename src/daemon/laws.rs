@@ -68,6 +68,12 @@ pub fn inject_rules(
     let hooks_dir = claude_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir)?;
 
+    let ygg_bin = std::env::current_exe()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "ygg".to_string());
+
     // PostToolUse hook script — extracts file_path from Claude's stdin JSON
     let post_tool_script = hooks_dir.join("ygg-post-tool.sh");
     if !post_tool_script.exists() {
@@ -79,7 +85,7 @@ pub fn inject_rules(
              d=json.load(sys.stdin); \
              print(d.get('tool_input',{{}}).get('file_path',''))\
              \" 2>/dev/null)\n\
-             [ -n \"$file\" ] && ygg hook --world {world_id} --files \"$file\" 2>/dev/null\n\
+             [ -n \"$file\" ] && \"{ygg_bin}\" hook --world {world_id} --files \"$file\" 2>/dev/null\n\
              exit 0\n"
         );
         std::fs::write(&post_tool_script, script)?;
@@ -96,7 +102,7 @@ pub fn inject_rules(
         let script = format!(
             "#!/usr/bin/env bash\n\
              # Yggdrazil Stop hook for world {world_id}\n\
-             ygg hook --world {world_id} 2>/dev/null\n\
+             \"{ygg_bin}\" hook --world {world_id} 2>/dev/null\n\
              exit 0\n"
         );
         std::fs::write(&stop_script, script)?;

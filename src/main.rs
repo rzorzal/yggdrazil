@@ -92,13 +92,27 @@ fn validate_world_id(id: &str) -> Result<()> {
 fn repo_root() -> PathBuf {
     let mut dir = std::env::current_dir().unwrap();
     loop {
-        if dir.join(".git").exists() {
+        let git_path = dir.join(".git");
+        if git_path.is_dir() {
             return dir;
+        }
+        if git_path.is_file() {
+            // Worktree: .git file contains "gitdir: /repo/.git/worktrees/id"
+            if let Some(real_root) = resolve_worktree_root(&git_path) {
+                return real_root;
+            }
         }
         if !dir.pop() {
             return std::env::current_dir().unwrap();
         }
     }
+}
+
+fn resolve_worktree_root(git_file: &std::path::Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(git_file).ok()?;
+    let gitdir = content.trim().strip_prefix("gitdir: ")?;
+    // /repo/.git/worktrees/<id> → parent=worktrees → parent=.git → parent=repo
+    PathBuf::from(gitdir).parent()?.parent()?.parent().map(|p| p.to_path_buf())
 }
 
 fn main() -> Result<()> {
