@@ -1,6 +1,7 @@
 pub mod daemon_cmd;
 pub mod hook;
 pub mod init;
+pub mod llama_cmd;
 pub mod local;
 pub mod monit;
 pub mod run;

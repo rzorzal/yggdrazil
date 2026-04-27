@@ -30,6 +30,127 @@ pub struct LocalSetup {
     pub gpu: Option<String>,
     pub env_vars: Vec<(String, String)>,
     pub server_bin: Option<PathBuf>,
+    /// true when we attached to an already-running server (we must not kill it on exit)
+    pub reused_server: bool,
+}
+
+// ── llama-server PID tracking ────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct LlamaState {
+    pub pid: u32,
+    pub port: u16,
+    pub model_name: String,
+    pub gpu: Option<String>,
+}
+
+pub fn llama_state_path(repo_root: &std::path::Path) -> PathBuf {
+    repo_root.join(".ygg").join("llama-server.pid")
+}
+
+pub fn read_llama_state(repo_root: &std::path::Path) -> Option<LlamaState> {
+    let content = std::fs::read_to_string(llama_state_path(repo_root)).ok()?;
+    let mut pid = None::<u32>;
+    let mut port = None::<u16>;
+    let mut model_name = None::<String>;
+    let mut gpu = None::<String>;
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("pid=") { pid = v.parse().ok(); }
+        else if let Some(v) = line.strip_prefix("port=") { port = v.parse().ok(); }
+        else if let Some(v) = line.strip_prefix("model=") { model_name = Some(v.to_string()); }
+        else if let Some(v) = line.strip_prefix("gpu=") { gpu = Some(v.to_string()); }
+    }
+    Some(LlamaState {
+        pid: pid?,
+        port: port?,
+        model_name: model_name.unwrap_or_default(),
+        gpu,
+    })
+}
+
+pub fn write_llama_state(repo_root: &std::path::Path, state: &LlamaState) -> Result<()> {
+    let mut content = format!("pid={}\nport={}\nmodel={}\n", state.pid, state.port, state.model_name);
+    if let Some(ref g) = state.gpu {
+        content.push_str(&format!("gpu={g}\n"));
+    }
+    std::fs::write(llama_state_path(repo_root), content)?;
+    Ok(())
+}
+
+pub fn clear_llama_state(repo_root: &std::path::Path) -> Result<()> {
+    let path = llama_state_path(repo_root);
+    if path.exists() { std::fs::remove_file(path)?; }
+    Ok(())
+}
+
+fn is_pid_alive(pid: u32) -> bool {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes();
+    sys.process(sysinfo::Pid::from_u32(pid)).is_some()
+}
+
+fn is_port_open(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        std::time::Duration::from_millis(500),
+    ).is_ok()
+}
+
+/// Check `.ygg/llama-server.pid` and return state only if the process is alive and the port responds.
+pub fn find_running_llama(repo_root: &std::path::Path) -> Option<LlamaState> {
+    let state = read_llama_state(repo_root)?;
+    if is_pid_alive(state.pid) && is_port_open(state.port) {
+        Some(state)
+    } else {
+        // Stale PID file — clean up
+        let _ = clear_llama_state(repo_root);
+        None
+    }
+}
+
+/// Kill the llama-server recorded in the PID file and remove it.
+pub fn stop_server(repo_root: &std::path::Path) -> Result<()> {
+    let state = match read_llama_state(repo_root) {
+        Some(s) => s,
+        None => {
+            println!("  No llama-server PID file found — nothing to stop.");
+            return Ok(());
+        }
+    };
+
+    if !is_pid_alive(state.pid) {
+        println!("  PID {} is not running (stale file removed).", state.pid);
+        clear_llama_state(repo_root)?;
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(state.pid as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows: use taskkill
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &state.pid.to_string(), "/F"])
+            .output();
+    }
+
+    // Wait up to 3s for graceful exit
+    for _ in 0..6 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !is_pid_alive(state.pid) { break; }
+    }
+
+    // Force kill if still alive
+    #[cfg(unix)]
+    if is_pid_alive(state.pid) {
+        unsafe { libc::kill(state.pid as libc::pid_t, libc::SIGKILL); }
+    }
+
+    clear_llama_state(repo_root)?;
+    println!("  llama-server (PID {}) stopped.", state.pid);
+    Ok(())
 }
 
 // ── GPU detection ────────────────────────────────────────────────────────────
@@ -513,8 +634,34 @@ pub fn agent_env_vars(agent: &str, server_port: u16, model_name: &str) -> Vec<(S
     }
 }
 
-pub fn setup(agent: &str, ctx_size: u32) -> Result<LocalSetup> {
+pub fn setup(agent: &str, ctx_size: u32, repo_root: &std::path::Path) -> Result<LocalSetup> {
     let ram_gb = available_ram_gb();
+
+    // Reuse already-running server when possible
+    if let Some(running) = find_running_llama(repo_root) {
+        println!(
+            "  llama-server already running — PID {} · port {} · {}{}",
+            running.pid,
+            running.port,
+            running.model_name,
+            running.gpu.as_deref().map(|g| format!(" [{g}]")).unwrap_or_default(),
+        );
+        let model = LocalModel {
+            name: running.model_name.clone(),
+            path: PathBuf::from("(running)"),
+            size_gb: 0.0,
+        };
+        let env_vars = agent_env_vars(agent, running.port, &running.model_name);
+        return Ok(LocalSetup {
+            model,
+            server_port: running.port,
+            ctx_size,
+            gpu: running.gpu,
+            env_vars,
+            server_bin: None,
+            reused_server: true,
+        });
+    }
 
     eprint!("  Detecting GPU... ");
     let gpu = detect_gpu();
@@ -536,6 +683,7 @@ pub fn setup(agent: &str, ctx_size: u32) -> Result<LocalSetup> {
         gpu,
         env_vars,
         server_bin,
+        reused_server: false,
     })
 }
 
@@ -561,6 +709,8 @@ pub fn start_server(
     port: u16,
     ctx_size: u32,
     use_gpu: bool,
+    gpu_label: Option<&str>,
+    repo_root: &std::path::Path,
 ) -> Result<std::process::Child> {
     let model_path = model.path.to_str().context("model path is not valid UTF-8")?;
     let port_str = port.to_string();
@@ -583,6 +733,16 @@ pub fn start_server(
         .context("failed to start llama-server")?;
 
     wait_for_server(port)?;
+
+    // Persist PID so future sessions can reuse this server
+    let state = LlamaState {
+        pid: child.id(),
+        port,
+        model_name: model.name.clone(),
+        gpu: gpu_label.map(|s| s.to_string()),
+    };
+    let _ = write_llama_state(repo_root, &state);
+
     Ok(child)
 }
 

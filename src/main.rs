@@ -60,11 +60,24 @@ enum Commands {
     },
     /// Check for updates and self-update
     Update,
+    /// Manage the local llama-server process
+    Llama {
+        #[command(subcommand)]
+        action: LlamaAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum DaemonAction {
     Start,
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum LlamaAction {
+    /// Show whether llama-server is running and its details
+    Status,
+    /// Stop the running llama-server
     Stop,
 }
 
@@ -115,5 +128,9 @@ fn main() -> Result<()> {
                 .block_on(daemon::Daemon::run(path))
         }
         Commands::Update => cli::update::run(),
+        Commands::Llama { action } => match action {
+            LlamaAction::Status => cli::llama_cmd::status(&root),
+            LlamaAction::Stop   => cli::llama_cmd::stop(&root),
+        },
     }
 }

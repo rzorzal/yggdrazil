@@ -92,7 +92,7 @@ pub fn run(
 
     // 3. Resolve local model setup (before world creation so errors surface early)
     let local_setup = if use_local {
-        Some(local::setup(agent, ctx_size)?)
+        Some(local::setup(agent, ctx_size, repo_root)?)
     } else {
         None
     };
@@ -119,7 +119,7 @@ pub fn run(
                 "  Starting llama-server on port {} with model: {}",
                 setup.server_port, setup.model.name
             );
-            match local::start_server(bin, &setup.model, setup.server_port, setup.ctx_size, setup.gpu.is_some()) {
+            match local::start_server(bin, &setup.model, setup.server_port, setup.ctx_size, setup.gpu.is_some(), setup.gpu.as_deref(), repo_root) {
                 Ok(child) => {
                     println!("  llama-server ready.");
                     llama_proc = Some(child);
@@ -155,9 +155,35 @@ pub fn run(
     let status = cmd.status()?;
     let exit_code = status.code().unwrap_or(0);
 
-    // 8. Kill llama-server
-    if let Some(mut child) = llama_proc {
-        let _ = child.kill();
+    // 8. Handle llama-server lifecycle
+    if let Some(ref setup) = local_setup {
+        if setup.reused_server {
+            println!(
+                "  llama-server still running on port {} (you attached to an existing process).",
+                setup.server_port
+            );
+            println!("  Use `ygg llama stop` to shut it down.");
+        } else if llama_proc.is_some() {
+            let keep = Confirm::new()
+                .with_prompt(format!(
+                    "Keep llama-server running on port {} for next session?",
+                    setup.server_port
+                ))
+                .default(true)
+                .interact()
+                .unwrap_or(true);
+            if keep {
+                // Detach: drop Child without killing (server keeps running, PID file already written)
+                drop(llama_proc.take());
+                println!("  llama-server kept running. Use `ygg llama stop` to shut it down.");
+            } else {
+                if let Some(mut child) = llama_proc.take() {
+                    let _ = child.kill();
+                }
+                let _ = local::clear_llama_state(repo_root);
+                println!("  llama-server stopped.");
+            }
+        }
     }
 
     // 9. Clean up world
