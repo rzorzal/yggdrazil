@@ -51,6 +51,7 @@ pub fn run(
     extra_rules: Option<&Path>,
     use_local: bool,
     ctx_size: u32,
+    local_model: Option<&str>,
 ) -> Result<()> {
     // 1. Prompt for branch
     let branches = list_local_branches(repo_root);
@@ -91,8 +92,8 @@ pub fn run(
     }
 
     // 3. Resolve local model setup (before world creation so errors surface early)
-    let local_setup = if use_local {
-        Some(local::setup(agent, ctx_size, repo_root)?)
+    let local_setup = if use_local || local_model.is_some() {
+        Some(local::setup(agent, ctx_size, repo_root, local_model)?)
     } else {
         None
     };
@@ -201,7 +202,7 @@ pub fn run(
         .interact()?;
 
     if restart {
-        run(repo_root, agent, agent_args, extra_rules, use_local, ctx_size)
+        run(repo_root, agent, agent_args, extra_rules, use_local, ctx_size, local_model)
     } else {
         std::process::exit(exit_code);
     }

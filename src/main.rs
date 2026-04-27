@@ -27,6 +27,12 @@ enum Commands {
         /// Run agent against a local llama.cpp model instead of a remote API
         #[arg(long)]
         local: bool,
+        /// Local model to use. Implies --local. Formats:
+        ///   org/repo/file.gguf  — download from HuggingFace if not found locally
+        ///   /path/to/model.gguf — direct path
+        ///   name                — substring search in local model paths
+        #[arg(long, value_name = "SPEC")]
+        local_model: Option<String>,
         /// llama-server context window size (tokens). Increase if you hit context errors.
         #[arg(long, default_value = "32768")]
         ctx_size: u32,
@@ -125,7 +131,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { rules } => cli::init::run(&root, rules.as_deref()),
-        Commands::Run { local, ctx_size, agent, args } => cli::run::run(&root, &agent, &args, None, local, ctx_size),
+        Commands::Run { local, local_model, ctx_size, agent, args } => {
+            cli::run::run(&root, &agent, &args, None, local, ctx_size, local_model.as_deref())
+        }
         Commands::Hook { world, files } => {
             validate_world_id(&world)?;
             cli::hook::run(&root, &world, &files)

@@ -511,27 +511,116 @@ fn pick_recommended_model(ram_gb: f64) -> &'static RecommendedModel {
         .unwrap_or(&RECOMMENDED_MODELS[RECOMMENDED_MODELS.len() - 1])
 }
 
-fn download_model(rec: &RecommendedModel) -> Result<LocalModel> {
+fn download_model_from_hf(repo: &str, filename: &str, display_name: &str) -> Result<LocalModel> {
     let dest_dir = expand_home(MODEL_INSTALL_DIR);
     std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(rec.filename);
+    let dest = dest_dir.join(filename);
 
-    let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        rec.repo, rec.filename
-    );
-
+    let url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
     println!("  Downloading model from HuggingFace:");
     println!("  {url}");
-    let bytes = download_file(&url, &dest, rec.name)?;
+    let bytes = download_file(&url, &dest, display_name)?;
     let size_gb = bytes as f64 / 1_073_741_824.0;
 
     println!("  Saved: {}", dest.display());
     Ok(LocalModel {
-        name: rec.name.to_string(),
+        name: display_name.to_string(),
         path: dest,
         size_gb,
     })
+}
+
+fn download_model(rec: &RecommendedModel) -> Result<LocalModel> {
+    download_model_from_hf(rec.repo, rec.filename, rec.name)
+}
+
+enum ModelSpec {
+    Path(PathBuf),
+    HuggingFace { repo: String, filename: String },
+    NameSearch(String),
+}
+
+fn parse_model_spec(spec: &str) -> ModelSpec {
+    if spec.starts_with('/') || spec.starts_with("~/") {
+        return ModelSpec::Path(expand_home(spec));
+    }
+    if spec.ends_with(".gguf") {
+        if let Some(slash) = spec.rfind('/') {
+            return ModelSpec::HuggingFace {
+                repo: spec[..slash].to_string(),
+                filename: spec[slash + 1..].to_string(),
+            };
+        }
+    }
+    ModelSpec::NameSearch(spec.to_string())
+}
+
+/// Resolve a model from a user-supplied spec string.
+/// Spec formats:
+///   - `/path/to/model.gguf` or `~/path/to/model.gguf` — direct path
+///   - `org/repo/file.gguf` — HuggingFace download (searches locally first)
+///   - `name` — substring search across MODEL_SEARCH_PATHS
+pub fn ensure_model_by_spec(spec: &str) -> Result<LocalModel> {
+    match parse_model_spec(spec) {
+        ModelSpec::Path(path) => {
+            if !path.exists() {
+                anyhow::bail!("model file not found: {}", path.display());
+            }
+            let size_gb = std::fs::metadata(&path)
+                .map(|m| m.len() as f64 / 1_073_741_824.0)
+                .unwrap_or(0.0);
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("model")
+                .to_string();
+            Ok(LocalModel { name, path, size_gb })
+        }
+
+        ModelSpec::HuggingFace { repo, filename } => {
+            // Reuse if already on disk
+            for search_path in MODEL_SEARCH_PATHS {
+                let dir = expand_home(search_path);
+                if dir.exists() {
+                    let mut found = Vec::new();
+                    collect_gguf_files(&dir, &mut found);
+                    if let Some(m) = found.into_iter().find(|m| {
+                        m.path.file_name().and_then(|n| n.to_str()) == Some(filename.as_str())
+                    }) {
+                        println!("  Found existing: {}", m.path.display());
+                        return Ok(m);
+                    }
+                }
+            }
+            // Not found locally — offer download
+            let name = filename.trim_end_matches(".gguf");
+            println!();
+            println!("  Model not found locally: {filename}");
+            println!("  Repo: https://huggingface.co/{repo}");
+            println!("  Install location: {}", expand_home(MODEL_INSTALL_DIR).display());
+            let ok = Confirm::new()
+                .with_prompt("Download now?")
+                .default(true)
+                .interact()?;
+            if !ok {
+                anyhow::bail!("download cancelled — place the GGUF in {} and retry", expand_home(MODEL_INSTALL_DIR).display());
+            }
+            download_model_from_hf(&repo, &filename, name)
+        }
+
+        ModelSpec::NameSearch(name) => {
+            let models = find_models();
+            let lower = name.to_lowercase();
+            if let Some(m) = models.into_iter().find(|m| m.name.to_lowercase().contains(&lower)) {
+                return Ok(m);
+            }
+            anyhow::bail!(
+                "no local model matching {name:?}\n\
+                 Tip: use 'org/repo/file.gguf' format to download from HuggingFace,\n\
+                 e.g. bartowski/Qwen2.5-Coder-32B-Instruct-GGUF/Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf"
+            )
+        }
+    }
 }
 
 /// Ensure at least one GGUF model is available. Offers download if missing.
@@ -634,7 +723,7 @@ pub fn agent_env_vars(agent: &str, server_port: u16, model_name: &str) -> Vec<(S
     }
 }
 
-pub fn setup(agent: &str, ctx_size: u32, repo_root: &std::path::Path) -> Result<LocalSetup> {
+pub fn setup(agent: &str, ctx_size: u32, repo_root: &std::path::Path, model_spec: Option<&str>) -> Result<LocalSetup> {
     let ram_gb = available_ram_gb();
 
     // Reuse already-running server when possible
@@ -670,7 +759,11 @@ pub fn setup(agent: &str, ctx_size: u32, repo_root: &std::path::Path) -> Result<
         None => eprintln!("none (CPU only — may be slow)"),
     }
 
-    let model = ensure_model(ram_gb)?;
+    let model = if let Some(spec) = model_spec {
+        ensure_model_by_spec(spec)?
+    } else {
+        ensure_model(ram_gb)?
+    };
     let server_bin = ensure_llama_server()?;
 
     let server_port = find_free_port(8080);
